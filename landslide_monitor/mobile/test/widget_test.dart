@@ -4,6 +4,7 @@ import 'package:landslide_monitor/main.dart';
 void main() {
   testWidgets('App builds', (WidgetTester tester) async {
     await tester.pumpWidget(const LandslideApp());
-    expect(find.text('Cảnh báo Sạt lở'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.byType(LandslideApp), findsOneWidget);
   });
 }

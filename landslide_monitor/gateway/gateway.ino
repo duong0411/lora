@@ -121,6 +121,9 @@ char DEV_WATER[48];
 char DEV_SOIL[48];
 char DEV_ROLL[48];
 char DEV_PITCH[48];
+char DEV_AX[48];
+char DEV_AY[48];
+char DEV_AZ[48];
 char DEV_ALARM[48];
 char DEV_LORA[48];
 
@@ -129,6 +132,9 @@ void rebuildDevNames() {
   snprintf(DEV_SOIL, sizeof(DEV_SOIL), "%s_soil", cfgChipId);
   snprintf(DEV_ROLL, sizeof(DEV_ROLL), "%s_roll", cfgChipId);
   snprintf(DEV_PITCH, sizeof(DEV_PITCH), "%s_pitch", cfgChipId);
+  snprintf(DEV_AX, sizeof(DEV_AX), "%s_ax", cfgChipId);
+  snprintf(DEV_AY, sizeof(DEV_AY), "%s_ay", cfgChipId);
+  snprintf(DEV_AZ, sizeof(DEV_AZ), "%s_az", cfgChipId);
   snprintf(DEV_ALARM, sizeof(DEV_ALARM), "%s_alarm", cfgChipId);
   snprintf(DEV_LORA, sizeof(DEV_LORA), "%s_lora", cfgChipId);
 }
@@ -216,9 +222,16 @@ void publishTelemetry() {
 
   snprintf(buf, sizeof(buf), "{\"value\":%.2f}", node.roll);
   mqttPub(DEV_ROLL, buf);
-
   snprintf(buf, sizeof(buf), "{\"value\":%.2f}", node.pitch);
   mqttPub(DEV_PITCH, buf);
+
+  // 3 trục gia tốc X/Y/Z (g)
+  snprintf(buf, sizeof(buf), "{\"value\":%.3f}", node.ax);
+  mqttPub(DEV_AX, buf);
+  snprintf(buf, sizeof(buf), "{\"value\":%.3f}", node.ay);
+  mqttPub(DEV_AY, buf);
+  snprintf(buf, sizeof(buf), "{\"value\":%.3f}", node.az);
+  mqttPub(DEV_AZ, buf);
 
   bool loraLink = (millis() - node.lastRxMs < LORA_STALE_MS);
   mqttPub(DEV_LORA, loraLink ? "{\"value\":\"ONLINE\"}" : "{\"value\":\"OFFLINE\"}");
@@ -527,14 +540,15 @@ void drawUi() {
   if (!node.valid) {
     display.println(F("Cho edge node..."));
   } else {
-    display.printf("Mua  :%5.1f%%\n", node.water);
-    display.printf("Am dat:%5.1f%%\n", node.soil);
-    display.printf("R:%5.1f P:%5.1f\n", node.roll, node.pitch);
-    if (node.landslide) display.println(F("!!! SAT LO !!!"));
-    else if (node.wetRisk) display.println(F("CANH BAO AM/NUOC"));
-    else if (node.impact) display.println(F("RUNG / VA DAP"));
+    display.printf("Luong mua: %4.1f%%\n", node.water);
+    display.printf("Do am dat: %4.1f%%\n", node.soil);
+    display.printf("X:%.2f Y:%.2f Z:%.2f\n", node.ax, node.ay, node.az);
+    display.printf("R:%.0f P:%.0f ", node.roll, node.pitch);
+    if (node.landslide) display.println(F("SATLO"));
+    else if (node.wetRisk) display.println(F("AMCAO"));
+    else if (node.impact) display.println(F("RUNG"));
     else if (node.tilt) display.println(F("NGHIENG"));
-    else display.println(F("Trang thai: OK"));
+    else display.println(F("OK"));
   }
   display.display();
 }
