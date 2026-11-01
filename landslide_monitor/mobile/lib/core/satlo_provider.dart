@@ -134,6 +134,50 @@ class SatloProvider extends ChangeNotifier {
     }
   }
 
+  ({String title, String body}) _alertCopy(
+    String type,
+    Map<String, dynamic> j,
+  ) {
+    final rawTitle = '${j['title'] ?? ''}'.trim();
+    final rawBody = '${j['body'] ?? ''}'.trim();
+    final w = j['water'];
+    final s = j['soil'];
+    final metrics = (w != null || s != null)
+        ? ' · Mưa ${w ?? '--'}% · Đất ${s ?? '--'}%'
+        : '';
+
+    // Luôn dùng tiếng Việt có dấu trên app (gateway gửi ASCII).
+    switch (type.toUpperCase()) {
+      case 'WET_RISK':
+        return (
+          title: '⚠️ Cảnh báo nguy cơ lũ!',
+          body:
+              'Lượng mưa và độ ẩm đất cao — nguy cơ ngập/lũ.$metrics',
+        );
+      case 'SAT_LO':
+        return (
+          title: '🚨 Cảnh báo sạt lở!',
+          body:
+              'Rung/nghiêng + ẩm/nước cao — kiểm tra ngay.$metrics',
+        );
+      case 'IMPACT':
+        return (
+          title: '⚠️ Cảnh báo rung lắc',
+          body: 'IMU phát hiện va đập / rung mạnh.',
+        );
+      case 'TILT':
+        return (
+          title: '⚠️ Cảnh báo nghiêng',
+          body: 'Góc nghiêng vượt ngưỡng an toàn.',
+        );
+      default:
+        return (
+          title: rawTitle.isEmpty ? '⚠️ Cảnh báo SATLO' : rawTitle,
+          body: rawBody.isEmpty ? 'Gateway đang báo động.' : rawBody,
+        );
+    }
+  }
+
   dynamic _valueOf(String payload) {
     final p = payload.trim();
     if (p == 'online' || p == 'offline') return p;
@@ -174,14 +218,22 @@ class SatloProvider extends ChangeNotifier {
         alarm = value;
         if (value == 'ON') {
           final type = '${j['type'] ?? 'ALERT'}';
-          final title = '${j['title'] ?? 'Cảnh báo sạt lở'}';
-          final body = '${j['body'] ?? payload}';
-          final key = '$type|$title|$body';
+          final mapped = _alertCopy(type, j);
+          final key = '$type|${mapped.title}|${mapped.body}';
           if (key != lastAlarmKey) {
             lastAlarmKey = key;
-            alerts.insert(0, AlertItem(type, title, body, DateTime.now()));
+            alerts.insert(
+              0,
+              AlertItem(type, mapped.title, mapped.body, DateTime.now()),
+            );
             if (alerts.length > 40) alerts.removeLast();
-            unawaited(SatloNotifications.show(title: title, body: body));
+            unawaited(
+              SatloNotifications.showFloodAlert(
+                type: type,
+                title: mapped.title,
+                body: mapped.body,
+              ),
+            );
           }
         } else {
           lastAlarmKey = null;
@@ -189,7 +241,11 @@ class SatloProvider extends ChangeNotifier {
       } catch (_) {
         alarm = 'ON';
         unawaited(
-          SatloNotifications.show(title: 'Cảnh báo sạt lở', body: payload),
+          SatloNotifications.showFloodAlert(
+            type: 'ALERT',
+            title: '⚠️ Cảnh báo SATLO',
+            body: payload,
+          ),
         );
       }
     }

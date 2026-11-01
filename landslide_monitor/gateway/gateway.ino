@@ -444,7 +444,7 @@ void handleAlertsEdgeSync(uint32_t now) {
     if (now - lastBuzzMs >= 1000) { buzzOn(600); lastBuzzMs = now; }
     if (!lastAlertLandslide) {
       publishAlarm("SAT_LO", "Canh bao sat lo!",
-                   "Rung/nghieng + am/nuoc cao", true);
+                   "Rung/nghieng + am/nuoc cao - kiem tra ngay", true);
       lastAlertLandslide = 1;
     }
   } else if (lastAlertLandslide) {
@@ -455,8 +455,8 @@ void handleAlertsEdgeSync(uint32_t now) {
   if (node.wetRisk && !node.landslide) {
     if (now - lastBuzzMs >= 1500) { buzzOn(350); lastBuzzMs = now; }
     if (!lastAlertWet) {
-      publishAlarm("WET_RISK", "Canh bao am/nuoc cao",
-                   "Luong mua va do am dat cao", true);
+      publishAlarm("WET_RISK", "Canh bao nguy co lu!",
+                   "Luong mua va do am dat cao - nguy co ngap/lu", true);
       lastAlertWet = 1;
     }
   } else if (!node.wetRisk && lastAlertWet) {

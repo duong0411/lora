@@ -1,53 +1,187 @@
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+/// Thông báo heads-up kiểu Shopee: banner trên cùng, âm thanh, rung mạnh.
 class SatloNotifications {
-  static final _plugin = FlutterLocalNotificationsPlugin();
-  static int _id = 3000;
+  SatloNotifications._();
+
+  static final FlutterLocalNotificationsPlugin _plugin =
+      FlutterLocalNotificationsPlugin();
+  static bool _ready = false;
+  static int _id = 4000;
+
+  /// Channel mới (v2) — Android không đổi Importance của channel cũ.
+  static const _channelId = 'satlo_flood_v2';
+  static const _channelName = 'Cảnh báo lũ & sạt lở';
+  static const _channelDesc =
+      'Thông báo khẩn khi lượng mưa/độ ẩm cao hoặc sạt lở';
+
+  static const _repeatGuard = Duration(seconds: 20);
+
+  static bool get _isMobile {
+    if (kIsWeb) return false;
+    return Platform.isAndroid || Platform.isIOS;
+  }
 
   static Future<void> init() async {
-    const android = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const ios = DarwinInitializationSettings();
-    await _plugin.initialize(
-      const InitializationSettings(android: android, iOS: ios),
+    if (_ready || !_isMobile) return;
+
+    const settings = InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      iOS: DarwinInitializationSettings(
+        requestAlertPermission: true,
+        requestBadgePermission: true,
+        requestSoundPermission: true,
+      ),
     );
-    final androidPlugin = _plugin.resolvePlatformSpecificImplementation<
+    await _plugin.initialize(settings);
+
+    final android = _plugin.resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>();
-    await androidPlugin?.requestNotificationsPermission();
-    await androidPlugin?.createNotificationChannel(
+    await android?.createNotificationChannel(
       const AndroidNotificationChannel(
-        'satlo_alerts',
-        'Cảnh báo sạt lở',
-        description: 'Thông báo khi gateway/còi cảnh báo',
+        _channelId,
+        _channelName,
+        description: _channelDesc,
         importance: Importance.max,
         playSound: true,
         enableVibration: true,
+        showBadge: true,
       ),
     );
+    await android?.requestNotificationsPermission();
+    try {
+      await android?.requestFullScreenIntentPermission();
+    } catch (_) {}
+
+    _ready = true;
   }
 
-  static Future<void> show({required String title, required String body}) async {
-    const android = AndroidNotificationDetails(
-      'satlo_alerts',
-      'Cảnh báo sạt lở',
-      channelDescription: 'Thông báo khi gateway/còi cảnh báo',
-      importance: Importance.max,
-      priority: Priority.high,
-      category: AndroidNotificationCategory.alarm,
-      playSound: true,
-      enableVibration: true,
-      color: Color(0xFFE07A3D),
+  /// Hiển thị cảnh báo lũ / sạt lở — heads-up + BigText + full-screen intent.
+  static Future<void> showFloodAlert({
+    required String type,
+    required String title,
+    required String body,
+  }) async {
+    if (!_isMobile) return;
+    await init();
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    final key = 'satlo_alert_ms_$type';
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final prev = prefs.getInt(key) ?? 0;
+    if (now - prev >= 0 && now - prev < _repeatGuard.inMilliseconds) {
+      return;
+    }
+
+    final copy = _copyFor(type, title, body);
+    final vibration = Int64List.fromList(
+      type.toUpperCase() == 'SAT_LO'
+          ? <int>[0, 500, 200, 500, 200, 800]
+          : <int>[0, 400, 180, 400, 180, 400],
     );
-    const ios = DarwinNotificationDetails(
-      presentAlert: true,
-      presentBadge: true,
-      presentSound: true,
+
+    final details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        _channelId,
+        _channelName,
+        channelDescription: _channelDesc,
+        importance: Importance.max,
+        priority: Priority.max,
+        category: AndroidNotificationCategory.alarm,
+        visibility: NotificationVisibility.public,
+        fullScreenIntent: true,
+        playSound: true,
+        enableVibration: true,
+        vibrationPattern: vibration,
+        ticker: copy.title,
+        icon: '@mipmap/ic_launcher',
+        color: const Color(0xFFEE4D2D),
+        colorized: true,
+        autoCancel: true,
+        ongoing: false,
+        onlyAlertOnce: false,
+        showWhen: true,
+        when: now,
+        styleInformation: BigTextStyleInformation(
+          copy.body,
+          contentTitle: copy.title,
+          summaryText: 'SATLO · Cảnh báo khẩn',
+        ),
+      ),
+      iOS: DarwinNotificationDetails(
+        presentAlert: true,
+        presentBanner: true,
+        presentList: true,
+        presentSound: true,
+        presentBadge: true,
+        interruptionLevel: InterruptionLevel.timeSensitive,
+        subtitle: copy.subtitle,
+      ),
     );
+
     await _plugin.show(
       _id++,
-      title,
-      body,
-      const NotificationDetails(android: android, iOS: ios),
+      copy.title,
+      copy.body,
+      details,
+      payload: type,
     );
+    await prefs.setInt(key, now);
+  }
+
+  /// Giữ API cũ.
+  static Future<void> show({required String title, required String body}) {
+    return showFloodAlert(type: 'ALERT', title: title, body: body);
+  }
+
+  static ({String title, String body, String subtitle}) _copyFor(
+    String type,
+    String title,
+    String body,
+  ) {
+    switch (type.toUpperCase()) {
+      case 'WET_RISK':
+        return (
+          title: title.trim().isEmpty ? '⚠️ Cảnh báo nguy cơ lũ!' : title,
+          body: body.trim().isEmpty
+              ? 'Lượng mưa / mực nước và độ ẩm đất đang cao. Kiểm tra ngay.'
+              : body,
+          subtitle: 'Nguy cơ lũ',
+        );
+      case 'SAT_LO':
+        return (
+          title: title.trim().isEmpty ? '🚨 Cảnh báo sạt lở!' : title,
+          body: body.trim().isEmpty
+              ? 'Phát hiện rung/nghiêng kèm ẩm cao. Nguy hiểm — kiểm tra khu vực.'
+              : body,
+          subtitle: 'Sạt lở',
+        );
+      case 'IMPACT':
+        return (
+          title: title.trim().isEmpty ? '⚠️ Cảnh báo rung lắc' : title,
+          body: body.trim().isEmpty
+              ? 'IMU phát hiện va đập / rung mạnh.'
+              : body,
+          subtitle: 'Rung lắc',
+        );
+      case 'TILT':
+        return (
+          title: title.trim().isEmpty ? '⚠️ Cảnh báo nghiêng' : title,
+          body: body.trim().isEmpty ? 'Góc nghiêng vượt ngưỡng an toàn.' : body,
+          subtitle: 'Nghiêng',
+        );
+      default:
+        return (
+          title: title.trim().isEmpty ? '⚠️ Cảnh báo SATLO' : title,
+          body: body.trim().isEmpty ? 'Gateway đang báo động.' : body,
+          subtitle: 'Cảnh báo',
+        );
+    }
   }
 }
