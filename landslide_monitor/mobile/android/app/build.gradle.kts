@@ -18,7 +18,7 @@ android {
 
     defaultConfig {
         applicationId = "com.duong0411.landslide.landslide_monitor"
-        minSdk = flutter.minSdkVersion
+        minSdk = maxOf(flutter.minSdkVersion, 23)
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

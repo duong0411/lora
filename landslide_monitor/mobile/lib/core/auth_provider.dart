@@ -34,8 +34,7 @@ class AuthProvider extends ChangeNotifier {
         phase = AuthPhase.connect;
       } else {
         phase = AuthPhase.home;
-        // Bật giám sát nền ngay khi đã có chip (cảnh báo khi tắt app)
-        unawaited(BackgroundMonitor.sync(enabled: true));
+        // Không start service ở đây — phải đợi Home có UI mới xin quyền được
       }
     } catch (_) {
       phase = AuthPhase.login;
@@ -105,7 +104,7 @@ class AuthProvider extends ChangeNotifier {
     AppConfig.setChipId(chipId);
     phase = AuthPhase.home;
     notifyListeners();
-    await BackgroundMonitor.sync(enabled: true);
+    await BackgroundMonitor.sync(enabled: true, showTestAlert: true);
   }
 
   Future<void> clearBoundChip() async {

@@ -3,9 +3,12 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
 
 import '../core/auth_provider.dart';
+import '../core/background_monitor.dart';
 import '../core/config.dart';
+import '../core/notifications.dart';
 import '../core/satlo_provider.dart';
 import 'theme.dart';
+import 'widgets/feedback.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -16,6 +19,8 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   bool _bootstrappedMqtt = false;
+  bool _bootstrappedBg = false;
+  bool _bgRunning = false;
 
   @override
   void didChangeDependencies() {
@@ -30,6 +35,39 @@ class _HomePageState extends State<HomePage> {
         auth.boundChip!.isNotEmpty) {
       Future.microtask(() => satlo.connectWithChip(auth.boundChip!));
     }
+    // Xin quyền + start FG service sau khi có UI (Home)
+    if (!_bootstrappedBg) {
+      _bootstrappedBg = true;
+      Future.microtask(_ensureBackgroundAlerts);
+    }
+  }
+
+  Future<void> _ensureBackgroundAlerts({bool test = false}) async {
+    final ok = await BackgroundMonitor.sync(
+      enabled: true,
+      showTestAlert: test,
+    );
+    final running = await BackgroundMonitor.isRunning();
+    if (!mounted) return;
+    setState(() => _bgRunning = running);
+    if (test) {
+      showAppSnack(
+        context,
+        message: ok && running
+            ? 'Đã bật cảnh báo nền — xem thanh thông báo'
+            : 'Chưa bật được giám sát nền — cấp quyền Thông báo + bỏ tối ưu pin',
+        success: ok && running,
+      );
+    }
+  }
+
+  Future<void> _testAlertNow() async {
+    await SatloNotifications.showFloodAlert(
+      type: 'TEST',
+      title: '✅ Thử thông báo SATLO',
+      body: 'Nếu thấy popup này, điện thoại đã nhận được cảnh báo kiểu Shopee.',
+    );
+    await _ensureBackgroundAlerts(test: true);
   }
 
   @override
@@ -125,6 +163,36 @@ class _HomePageState extends State<HomePage> {
                                   .textTheme
                                   .bodyMedium
                                   ?.copyWith(fontSize: 13),
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              _bgRunning
+                                  ? 'Cảnh báo nền: ĐANG BẬT (tắt app vẫn báo)'
+                                  : 'Cảnh báo nền: CHƯA BẬT — nhấn thử bên dưới',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium
+                                  ?.copyWith(
+                                    fontSize: 13,
+                                    color: _bgRunning
+                                        ? SatloTheme.ok
+                                        : SatloTheme.danger,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                            ),
+                            const SizedBox(height: 10),
+                            SizedBox(
+                              width: double.infinity,
+                              child: OutlinedButton.icon(
+                                onPressed: _testAlertNow,
+                                icon: const Icon(Icons.notifications_active_rounded),
+                                label: const Text('Thử thông báo + bật cảnh báo nền'),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: SatloTheme.amber,
+                                  side: const BorderSide(color: SatloTheme.amber),
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                ),
+                              ),
                             ),
                           ],
                         ),

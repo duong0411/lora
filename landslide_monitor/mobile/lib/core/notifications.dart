@@ -176,6 +176,14 @@ class SatloNotifications {
           body: body.trim().isEmpty ? 'Góc nghiêng vượt ngưỡng an toàn.' : body,
           subtitle: 'Nghiêng',
         );
+      case 'TEST':
+        return (
+          title: title.trim().isEmpty ? '✅ Cảnh báo nền đã bật' : title,
+          body: body.trim().isEmpty
+              ? 'Vuốt tắt app vẫn nhận cảnh báo lũ/sạt lở.'
+              : body,
+          subtitle: 'Kiểm tra',
+        );
       default:
         return (
           title: title.trim().isEmpty ? '⚠️ Cảnh báo SATLO' : title,
