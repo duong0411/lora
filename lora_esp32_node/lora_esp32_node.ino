@@ -46,7 +46,7 @@
 #define LORA_TX_POWER_DBM  17
 #define NODE_ID            1
 
-#define SEND_INTERVAL_MS   3000   // chu kỳ gửi LoRa
+#define SEND_INTERVAL_MS   1000   // ~1s/gói — realtime hơn (cảnh báo vẫn gửi ngay)
 
 // ===================== LOG Serial =====================
 #define LOG_SENSOR_MS      1000   // chu kỳ in trạng thái cảm biến

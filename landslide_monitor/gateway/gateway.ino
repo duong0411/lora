@@ -49,12 +49,12 @@
 #define BUZZ_CH        0
 #define BUZZ_FREQ      2700
 
-#define UI_MS          250
+#define UI_MS          200
 #define MQTT_RETRY_MS  5000
 #define WIFI_RETRY_MS  10000
-#define TELEMETRY_MS   3000
+#define TELEMETRY_MS   800    // đẩy phone nhanh; LoRa RX không chờ MQTT
 #define HEART_MS       10000
-#define LORA_STALE_MS  15000
+#define LORA_STALE_MS  6000   // node ~1s/gói → WAIT nếu mất ~6s
 
 // Giống iot_class SmartHome
 #define MQTT_HOST_DEFAULT  "mqtt.duynguyen.io.vn"
@@ -110,6 +110,7 @@ uint32_t buzzUntilMs = 0;
 uint32_t lastBuzzMs = 0;
 uint32_t bootHoldStart = 0;
 bool bootHolding = false;
+bool telemetryPending = false;  // có gói LoRa mới → xếp hàng MQTT (không block RX)
 
 int lastAlertLandslide = 0;
 int lastAlertWet = 0;
@@ -201,7 +202,7 @@ void mqttPub(const char *dev, const char *payload) {
   char topic[80];
   snprintf(topic, sizeof(topic), "tele/%s/status", dev);
   mqttClient.publish(topic, payload, false, 0);
-  Serial.printf("[MQTT] %s <= %s\n", topic, payload);
+  // Không Serial từng topic — in log làm chậm loop, dễ miss LoRa
 }
 
 void publishOnline() {
@@ -212,10 +213,9 @@ void publishTelemetry() {
   if (!node.valid) return;
   char buf[64];
 
+  // Publish gọn, chỉ pump WS 1 lần giữa chừng — tránh block LoRa RX
   snprintf(buf, sizeof(buf), "{\"value\":%.1f}", node.water);
   mqttPub(DEV_WATER, buf);
-  wsClient.loop();
-
   snprintf(buf, sizeof(buf), "{\"value\":%.1f}", node.soil);
   mqttPub(DEV_SOIL, buf);
   wsClient.loop();
@@ -225,7 +225,6 @@ void publishTelemetry() {
   snprintf(buf, sizeof(buf), "{\"value\":%.2f}", node.pitch);
   mqttPub(DEV_PITCH, buf);
 
-  // 3 trục gia tốc X/Y/Z (g)
   snprintf(buf, sizeof(buf), "{\"value\":%.3f}", node.ax);
   mqttPub(DEV_AX, buf);
   snprintf(buf, sizeof(buf), "{\"value\":%.3f}", node.ay);
@@ -235,6 +234,7 @@ void publishTelemetry() {
 
   bool loraLink = (millis() - node.lastRxMs < LORA_STALE_MS);
   mqttPub(DEV_LORA, loraLink ? "{\"value\":\"ONLINE\"}" : "{\"value\":\"OFFLINE\"}");
+  wsClient.loop();
 }
 
 void publishAlarm(const char *type, const char *title, const char *body, bool on) {
@@ -404,13 +404,14 @@ bool initLoRa() {
   LoRa.setCodingRate4(5);
   LoRa.enableCrc();
   LoRa.setSyncWord(LORA_SYNCWORD);
+  LoRa.receive();  // luôn ở RX liên tục
   return true;
 }
 
-bool parseNodePacket(const String &msg, NodeData &out) {
-  if (!msg.startsWith("NODE,")) return false;
+bool parseNodePacket(const char *msg, NodeData &out) {
+  if (!msg || strncmp(msg, "NODE,", 5) != 0) return false;
   float f[16] = {0};
-  int n = sscanf(msg.c_str(),
+  int n = sscanf(msg,
                  "NODE,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f",
                  &f[0], &f[1], &f[2], &f[3], &f[4], &f[5], &f[6], &f[7],
                  &f[8], &f[9], &f[10], &f[11], &f[12], &f[13], &f[14]);
@@ -490,24 +491,34 @@ void handleAlertsEdgeSync(uint32_t now) {
 }
 
 void handleLoRaRx() {
-  int n = LoRa.parsePacket();
-  if (n <= 0) return;
-  String msg;
-  while (LoRa.available()) msg += (char)LoRa.read();
-  rxCount++;
+  // Drain toàn bộ gói đang chờ — KHÔNG publish MQTT ở đây (tránh miss gói kế)
+  for (;;) {
+    int n = LoRa.parsePacket();
+    if (n <= 0) break;
 
-  NodeData parsed;
-  if (!parseNodePacket(msg, parsed)) return;
-  parsed.rssi = LoRa.packetRssi();
-  parsed.snr = LoRa.packetSnr();
-  parsed.lastRxMs = millis();
-  node = parsed;
+    char msg[220];
+    int i = 0;
+    while (LoRa.available() && i < (int)sizeof(msg) - 1) {
+      msg[i++] = (char)LoRa.read();
+    }
+    msg[i] = 0;
+    rxCount++;
 
-  Serial.printf("[LORA] seq=%lu W=%.1f S=%.1f L=%d WET=%d\n",
-                (unsigned long)node.seq, node.water, node.soil,
-                node.landslide, node.wetRisk);
+    NodeData parsed;
+    if (!parseNodePacket(msg, parsed)) continue;
+    parsed.rssi = LoRa.packetRssi();
+    parsed.snr = LoRa.packetSnr();
+    parsed.lastRxMs = millis();
+    node = parsed;
+    telemetryPending = true;
+    lastUiMs = 0;  // vẽ OLED ngay vòng sau
 
-  if (mqttClient.isConnected()) publishTelemetry();
+    Serial.printf("[LORA] seq=%lu W=%.1f S=%.1f rssi=%d L=%d WET=%d\n",
+                  (unsigned long)node.seq, node.water, node.soil,
+                  parsed.rssi, node.landslide, node.wetRisk);
+  }
+  // Giữ chip ở chế độ nhận sau khi đọc
+  LoRa.receive();
 }
 
 // -------------------- OLED --------------------
@@ -632,22 +643,29 @@ void setup() {
 void loop() {
   uint32_t now = millis();
 
-  // LoRa / còi / OLED luôn chạy trước — độc lập mạng
+  // 1) LoRa trước hết — drain nhanh, không phụ thuộc MQTT
   if (loraOk) handleLoRaRx();
-  handleAlertsEdgeSync(now);  // còi local; MQTT publish best-effort bên trong
+  handleAlertsEdgeSync(now);  // còi local; alarm MQTT thưa, best-effort
 
   if (now - lastUiMs >= UI_MS) {
     lastUiMs = now;
-    drawUi();  // hiện LoRa + MQTT status
+    drawUi();
   }
 
-  // Mạng chỉ để đẩy phone — lỗi thì bỏ qua
+  // 2) Poll LoRa lại trước khi đụng mạng (OLED/I2C có thể chiếm vài ms)
+  if (loraOk) handleLoRaRx();
+
   checkBootButton(now);
   ensureWifi(now);
   ensureMqtt(now);
 
-  if (mqttOk && node.valid && (now - lastTelemetryMs >= TELEMETRY_MS)) {
+  // 3) MQTT telemetry xếp hàng — chỉ khi có gói mới + đủ khoảng cách
+  if (mqttOk && node.valid && telemetryPending &&
+      (now - lastTelemetryMs >= TELEMETRY_MS)) {
     lastTelemetryMs = now;
+    telemetryPending = false;
     publishTelemetry();
+    // Sau burst MQTT, drain LoRa ngay kẻo miss gói trong lúc publish
+    if (loraOk) handleLoRaRx();
   }
 }
