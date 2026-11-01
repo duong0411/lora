@@ -1,0 +1,144 @@
+name: Mobile Release (APK + IPA)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (vd 1.0.0) — bỏ trống nếu push tag"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    name: Build APK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: landslide_monitor/mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Build APK (release)
+        run: flutter build apk --release
+
+      - name: Rename artifact
+        run: |
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-release.apk dist/landslide_monitor-android.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: landslide_monitor/mobile/dist/landslide_monitor-android.apk
+
+  build-ios:
+    name: Build IPA (unsigned)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: landslide_monitor/mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Build iOS (no codesign)
+        run: flutter build ipa --release --no-codesign
+
+      - name: Pack IPA-like zip
+        run: |
+          mkdir -p dist/Payload
+          # Flutter no-codesign tạo .app trong build/ios/archive hoặc ipa build folder
+          APP_PATH=$(find build/ios -name "Runner.app" | head -n 1)
+          echo "Found app: $APP_PATH"
+          cp -R "$APP_PATH" dist/Payload/
+          cd dist
+          zip -r landslide_monitor-ios-unsigned.ipa Payload
+          ls -lah
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: landslide_monitor/mobile/dist/landslide_monitor-ios-unsigned.ipa
+
+  release:
+    name: Create GitHub Release
+    needs: [build-android, build-ios]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download APK
+        uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+          path: release-assets
+
+      - name: Download IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-ipa
+          path: release-assets
+
+      - name: Resolve tag
+        id: ver
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ inputs.version }}" ]; then
+            echo "tag=v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v0.1.0-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          fi
+          ls -lah release-assets
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: Landslide Monitor ${{ steps.ver.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            release-assets/landslide_monitor-android.apk
+            release-assets/landslide_monitor-ios-unsigned.ipa
+          body: |
+            ## Mobile builds
+            - **Android APK**: `landslide_monitor-android.apk` (cài trực tiếp)
+            - **iOS IPA**: `landslide_monitor-ios-unsigned.ipa` (chưa ký Apple — cần cert để cài lên máy thật/App Store)
+
+            MQTT: `wss://mqtt.duynguyen.io.vn/mqtt` — Chip ID mặc định `SATLO_GW01`
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
