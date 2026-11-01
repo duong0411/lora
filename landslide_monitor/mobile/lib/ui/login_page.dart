@@ -4,6 +4,8 @@ import 'package:provider/provider.dart';
 
 import '../core/auth_provider.dart';
 import '../core/config.dart';
+import 'forgot_password_page.dart';
+import 'register_page.dart';
 import 'theme.dart';
 import 'widgets/feedback.dart';
 
@@ -112,7 +114,23 @@ class _LoginPageState extends State<LoginPage> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 22),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const ForgotPasswordPage(),
+                          ),
+                        );
+                      },
+                      child: const Text(
+                        'Quên mật khẩu?',
+                        style: TextStyle(color: SatloTheme.water),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
                   SizedBox(
                     height: 54,
                     child: FilledButton(
@@ -139,7 +157,33 @@ class _LoginPageState extends State<LoginPage> {
                             ),
                     ),
                   ),
-                  const SizedBox(height: 18),
+                  const SizedBox(height: 14),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        'Chưa có tài khoản?',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                      TextButton(
+                        onPressed: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const RegisterPage(),
+                            ),
+                          );
+                        },
+                        child: const Text(
+                          'Đăng ký',
+                          style: TextStyle(
+                            color: SatloTheme.amber,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
                   Text(
                     'Tài khoản AloT · duynguyen.io.vn',
                     textAlign: TextAlign.center,
