@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
 import 'auth_service.dart';
+import 'background_monitor.dart';
 import 'config.dart';
 import 'user_model.dart';
 
@@ -32,6 +34,8 @@ class AuthProvider extends ChangeNotifier {
         phase = AuthPhase.connect;
       } else {
         phase = AuthPhase.home;
+        // Bật giám sát nền ngay khi đã có chip (cảnh báo khi tắt app)
+        unawaited(BackgroundMonitor.sync(enabled: true));
       }
     } catch (_) {
       phase = AuthPhase.login;
@@ -101,9 +105,11 @@ class AuthProvider extends ChangeNotifier {
     AppConfig.setChipId(chipId);
     phase = AuthPhase.home;
     notifyListeners();
+    await BackgroundMonitor.sync(enabled: true);
   }
 
   Future<void> clearBoundChip() async {
+    await BackgroundMonitor.sync(enabled: false);
     await _svc.clearChipId();
     boundChip = null;
     phase = AuthPhase.connect;
@@ -111,6 +117,7 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    await BackgroundMonitor.sync(enabled: false);
     await _svc.logout();
     await _svc.clearChipId();
     user = null;
