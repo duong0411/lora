@@ -18,6 +18,17 @@ Repo: https://github.com/duong0411/lora
 - Chip ID mặc định: `SATLO_GW01`
 - Alarm topic: `tele/SATLO_GW01_alarm/status`
 
+## Cảnh báo điện thoại khi tắt app (kiểu Shopee)
+
+App dùng **Foreground Service + MQTT** (không cần mở UI):
+
+1. Cài APK → mở app → gắn chip → nhấn **Thử thông báo + bật cảnh báo nền**
+2. Cấp quyền thông báo + bỏ tối ưu pin
+3. Giữ thanh `SATLO đang giám sát` trên khay thông báo
+4. Vuốt tắt app vẫn nhận popup khi gateway publish `tele/{CHIP}_alarm/status`
+
+Chi tiết: `landslide_monitor/mobile/README.md`
+
 ## Mobile Release (GitHub Actions)
 
 Workflow: `.github/workflows/mobile-release.yml`
@@ -26,8 +37,8 @@ Workflow: `.github/workflows/mobile-release.yml`
 
 **Cách 1 — tạo tag:**
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.0.7
+git push origin v1.0.7
 ```
 
 **Cách 2 — Actions → Mobile Release → Run workflow**

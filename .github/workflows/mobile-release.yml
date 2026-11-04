@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (vd 1.0.0) — bỏ trống nếu push tag"
+        description: "Release version (vd 1.0.7) — bỏ trống nếu push tag"
         required: false
         default: ""
 
@@ -40,6 +40,10 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
+      - name: Analyze (non-blocking)
+        continue-on-error: true
+        run: flutter analyze --no-fatal-infos
+
       - name: Build APK (release)
         run: flutter build apk --release
 
@@ -47,12 +51,14 @@ jobs:
         run: |
           mkdir -p dist
           cp build/app/outputs/flutter-apk/app-release.apk dist/landslide_monitor-android.apk
+          ls -lah dist
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: android-apk
           path: landslide_monitor/mobile/dist/landslide_monitor-android.apk
+          if-no-files-found: error
 
   build-ios:
     name: Build IPA (unsigned)
@@ -73,25 +79,29 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
+      # flutter build ipa --no-codesign thường lỗi archive; dùng ios --no-codesign rồi zip Payload
       - name: Build iOS (no codesign)
-        run: flutter build ipa --release --no-codesign
+        run: |
+          flutter build ios --release --no-codesign
+          test -d build/ios/iphoneos/Runner.app
 
-      - name: Pack IPA-like zip
+      - name: Pack unsigned IPA
         run: |
           mkdir -p dist/Payload
-          # Flutter no-codesign tạo .app trong build/ios/archive hoặc ipa build folder
-          APP_PATH=$(find build/ios -name "Runner.app" | head -n 1)
-          echo "Found app: $APP_PATH"
-          cp -R "$APP_PATH" dist/Payload/
-          cd dist
-          zip -r landslide_monitor-ios-unsigned.ipa Payload
-          ls -lah
+          cp -R build/ios/iphoneos/Runner.app dist/Payload/
+          (
+            cd dist
+            zip -qry landslide_monitor-ios-unsigned.ipa Payload
+          )
+          ls -lah dist
+          unzip -l dist/landslide_monitor-ios-unsigned.ipa | head -n 20
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: ios-ipa
           path: landslide_monitor/mobile/dist/landslide_monitor-ios-unsigned.ipa
+          if-no-files-found: error
 
   release:
     name: Create GitHub Release
@@ -124,7 +134,7 @@ jobs:
           elif [ -n "${{ inputs.version }}" ]; then
             echo "tag=v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=v0.1.0-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+            echo "tag=v1.0.7-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           fi
           mkdir -p release-assets
           ls -lah release-assets || true
@@ -138,9 +148,15 @@ jobs:
           files: release-assets/*
           body: |
             ## Mobile builds
-            - **Android APK**: `landslide_monitor-android.apk` (cài trực tiếp)
-            - **iOS IPA**: `landslide_monitor-ios-unsigned.ipa` (chưa ký Apple — cần cert để cài máy thật/App Store)
+            - **Android APK**: `landslide_monitor-android.apk` — cài trực tiếp
+            - **iOS IPA**: `landslide_monitor-ios-unsigned.ipa` — chưa ký Apple (cần cert để cài máy thật)
 
-            MQTT: `wss://mqtt.duynguyen.io.vn/mqtt` — Chip ID mặc định `SATLO_GW01`
+            ## Cảnh báo khi tắt app (kiểu Shopee)
+            1. Mở app → cấp quyền **Thông báo**
+            2. Cho phép **bỏ tối ưu pin** / không hạn chế nền
+            3. Giữ thanh `SATLO đang giám sát` trên khay thông báo
+            4. Vuốt tắt app vẫn nhận heads-up khi gateway báo `SAT_LO` / `WET_RISK`
+
+            MQTT: `wss://mqtt.duynguyen.io.vn/mqtt` — Chip mặc định `SATLO_GW01`
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

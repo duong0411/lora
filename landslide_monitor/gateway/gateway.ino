@@ -381,7 +381,7 @@ uint8_t readLoRaReg(uint8_t reg) {
   return v;
 }
 
-bool initLoRa() {
+void hardResetLoRa() {
   pinMode(LORA_NSS, OUTPUT);
   digitalWrite(LORA_NSS, HIGH);
   pinMode(LORA_RST, OUTPUT);
@@ -391,21 +391,39 @@ bool initLoRa() {
   delay(10);
   digitalWrite(LORA_RST, HIGH);
   delay(50);
+}
 
+bool initLoRa() {
+  pinMode(LORA_DIO0, INPUT);
   spiLoRa.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
   LoRa.setSPI(spiLoRa);
   LoRa.setSPIFrequency(LORA_SPI_HZ);
   LoRa.setPins(LORA_NSS, LORA_RST, LORA_DIO0);
 
-  if (readLoRaReg(REG_VERSION) != 0x12) return false;
-  if (!LoRa.begin(LORA_FREQ)) return false;
-  LoRa.setSpreadingFactor(7);
-  LoRa.setSignalBandwidth(125E3);
-  LoRa.setCodingRate4(5);
-  LoRa.enableCrc();
-  LoRa.setSyncWord(LORA_SYNCWORD);
-  LoRa.receive();  // luôn ở RX liên tục
-  return true;
+  for (int attempt = 1; attempt <= 5; attempt++) {
+    hardResetLoRa();
+    uint8_t ver = readLoRaReg(REG_VERSION);
+    Serial.printf("[LORA] try %d/5 VERSION=0x%02X\n", attempt, ver);
+    if (ver != 0x12) {
+      delay(120);
+      continue;
+    }
+    if (!LoRa.begin(LORA_FREQ)) {
+      Serial.println(F("[LORA] begin() FAIL"));
+      delay(120);
+      continue;
+    }
+    LoRa.setSpreadingFactor(7);
+    LoRa.setSignalBandwidth(125E3);
+    LoRa.setCodingRate4(5);
+    LoRa.enableCrc();
+    LoRa.setSyncWord(LORA_SYNCWORD);
+    LoRa.receive();
+    Serial.printf("[LORA] OK 433MHz SF7 sync=0x%02X\n", (unsigned)LORA_SYNCWORD);
+    return true;
+  }
+  Serial.println(F("[LORA] FAIL - kiem tra day SX1278 gateway (3V3/GND/NSS/SCK/MOSI/MISO/RST/DIO0/ANT)"));
+  return false;
 }
 
 bool parseNodePacket(const char *msg, NodeData &out) {
@@ -491,7 +509,7 @@ void handleAlertsEdgeSync(uint32_t now) {
 }
 
 void handleLoRaRx() {
-  // Drain toàn bộ gói đang chờ — KHÔNG publish MQTT ở đây (tránh miss gói kế)
+  // Drain gói — KHÔNG gọi LoRa.receive() mỗi vòng (reset modem giữa chừng → miss RX)
   for (;;) {
     int n = LoRa.parsePacket();
     if (n <= 0) break;
@@ -504,21 +522,26 @@ void handleLoRaRx() {
     msg[i] = 0;
     rxCount++;
 
+    int rssi = LoRa.packetRssi();
+    float snr = LoRa.packetSnr();
+
     NodeData parsed;
-    if (!parseNodePacket(msg, parsed)) continue;
-    parsed.rssi = LoRa.packetRssi();
-    parsed.snr = LoRa.packetSnr();
+    if (!parseNodePacket(msg, parsed)) {
+      Serial.printf("[LORA] RAW len=%d rssi=%d snr=%.1f msg=%.80s\n",
+                    n, rssi, snr, msg);
+      continue;
+    }
+    parsed.rssi = rssi;
+    parsed.snr = snr;
     parsed.lastRxMs = millis();
     node = parsed;
     telemetryPending = true;
-    lastUiMs = 0;  // vẽ OLED ngay vòng sau
+    lastUiMs = 0;
 
-    Serial.printf("[LORA] seq=%lu W=%.1f S=%.1f rssi=%d L=%d WET=%d\n",
+    Serial.printf("[LORA] seq=%lu W=%.1f S=%.1f rssi=%d snr=%.1f L=%d WET=%d\n",
                   (unsigned long)node.seq, node.water, node.soil,
-                  parsed.rssi, node.landslide, node.wetRisk);
+                  rssi, snr, node.landslide, node.wetRisk);
   }
-  // Giữ chip ở chế độ nhận sau khi đọc
-  LoRa.receive();
 }
 
 // -------------------- OLED --------------------
@@ -580,6 +603,10 @@ void setup() {
   // 1) LoRa + OLED trước — luôn dùng được dù không có mạng
   oledOk = initOled();
   loraOk = initLoRa();
+  Serial.printf("[LORA] init %s ver=0x%02X SF7 BW125 sync=0x%02X\n",
+                loraOk ? "OK" : "FAIL",
+                loraOk ? readLoRaReg(REG_VERSION) : 0,
+                (unsigned)LORA_SYNCWORD);
   if (oledOk) {
     display.clearDisplay();
     display.setCursor(0, 0);
@@ -665,7 +692,16 @@ void loop() {
     lastTelemetryMs = now;
     telemetryPending = false;
     publishTelemetry();
-    // Sau burst MQTT, drain LoRa ngay kẻo miss gói trong lúc publish
     if (loraOk) handleLoRaRx();
+  }
+
+  // Heartbeat debug mỗi 3s khi chưa có RX (OLED WAIT)
+  static uint32_t lastRxDbgMs = 0;
+  if (now - lastRxDbgMs >= 3000) {
+    lastRxDbgMs = now;
+    uint32_t age = node.valid ? (now - node.lastRxMs) : 0;
+    Serial.printf("[LORA] poll ok=%d rxCount=%lu ageMs=%lu valid=%d\n",
+                  loraOk ? 1 : 0, (unsigned long)rxCount,
+                  (unsigned long)age, node.valid ? 1 : 0);
   }
 }

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -6,6 +7,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Thông báo heads-up kiểu Shopee: banner trên cùng, âm thanh, rung mạnh.
+/// Hoạt động cả khi app bị vuốt tắt nhờ Foreground Service + MQTT nền.
 class SatloNotifications {
   SatloNotifications._();
 
@@ -14,11 +16,11 @@ class SatloNotifications {
   static bool _ready = false;
   static int _id = 4000;
 
-  /// Channel mới (v2) — Android không đổi Importance của channel cũ.
-  static const _channelId = 'satlo_flood_v2';
+  /// Channel mới (v3) — Android không đổi Importance của channel cũ.
+  static const _channelId = 'satlo_flood_v3';
   static const _channelName = 'Cảnh báo lũ & sạt lở';
   static const _channelDesc =
-      'Thông báo khẩn khi lượng mưa/độ ẩm cao hoặc sạt lở';
+      'Thông báo khẩn khi lượng mưa/độ ẩm cao hoặc sạt lở — kể cả khi tắt app';
 
   static const _repeatGuard = Duration(seconds: 20);
 
@@ -36,6 +38,7 @@ class SatloNotifications {
         requestAlertPermission: true,
         requestBadgePermission: true,
         requestSoundPermission: true,
+        requestCriticalPermission: false,
       ),
     );
     await _plugin.initialize(settings);
@@ -51,12 +54,22 @@ class SatloNotifications {
         playSound: true,
         enableVibration: true,
         showBadge: true,
+        enableLights: true,
+        ledColor: Color(0xFFEE4D2D),
       ),
     );
     await android?.requestNotificationsPermission();
     try {
       await android?.requestFullScreenIntentPermission();
     } catch (_) {}
+
+    final ios = _plugin.resolvePlatformSpecificImplementation<
+        IOSFlutterLocalNotificationsPlugin>();
+    await ios?.requestPermissions(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
 
     _ready = true;
   }

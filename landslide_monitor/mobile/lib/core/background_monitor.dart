@@ -86,10 +86,18 @@ class BackgroundMonitor {
       }
       await FlutterForegroundTask.requestNotificationPermission();
 
-      final ignoring =
-          await FlutterForegroundTask.isIgnoringBatteryOptimizations;
-      if (!ignoring) {
-        await FlutterForegroundTask.requestIgnoreBatteryOptimization();
+      if (Platform.isAndroid) {
+        final ignoring =
+            await FlutterForegroundTask.isIgnoringBatteryOptimizations;
+        if (!ignoring) {
+          await FlutterForegroundTask.requestIgnoreBatteryOptimization();
+        }
+        // Giữ service sống khi reboot / bị hệ thống kill
+        try {
+          if (!await FlutterForegroundTask.canScheduleExactAlarms) {
+            await FlutterForegroundTask.openAlarmsAndRemindersSettings();
+          }
+        } catch (_) {}
       }
 
       if (await FlutterForegroundTask.isRunningService) {
