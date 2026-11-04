@@ -7,9 +7,13 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (vd 1.0.7) — bỏ trống nếu push tag"
+        description: "Release version (vd 1.0.8) — bỏ trống nếu push tag"
         required: false
         default: ""
+      ios_only:
+        description: "Chỉ build IPA (bỏ APK)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -17,6 +21,7 @@ permissions:
 jobs:
   build-android:
     name: Build APK
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.ios_only) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -60,9 +65,11 @@ jobs:
           path: landslide_monitor/mobile/dist/landslide_monitor-android.apk
           if-no-files-found: error
 
+  # macos-latest (arm64) hay hết slot → dùng macos-13 (Intel) ổn định hơn
   build-ios:
     name: Build IPA (unsigned)
-    runs-on: macos-latest
+    runs-on: macos-13
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: landslide_monitor/mobile
@@ -79,7 +86,6 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
-      # flutter build ipa --no-codesign thường lỗi archive; dùng ios --no-codesign rồi zip Payload
       - name: Build iOS (no codesign)
         run: |
           flutter build ios --release --no-codesign
@@ -134,7 +140,7 @@ jobs:
           elif [ -n "${{ inputs.version }}" ]; then
             echo "tag=v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=v1.0.7-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+            echo "tag=v1.0.8-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           fi
           mkdir -p release-assets
           ls -lah release-assets || true
