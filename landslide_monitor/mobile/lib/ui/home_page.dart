@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
@@ -17,10 +19,32 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   bool _bootstrappedMqtt = false;
   bool _bootstrappedBg = false;
   bool _bgRunning = false;
+  bool _bgSyncing = false;
+  bool _bgTried = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Quay lại app → đảm bảo service nền vẫn chạy (OEM có thể giết).
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_ensureBackgroundAlerts());
+    }
+  }
 
   @override
   void didChangeDependencies() {
@@ -35,39 +59,47 @@ class _HomePageState extends State<HomePage> {
         auth.boundChip!.isNotEmpty) {
       Future.microtask(() => satlo.connectWithChip(auth.boundChip!));
     }
-    // Xin quyền + start FG service sau khi có UI (Home)
+    // Tự xin quyền + start FG service ngay khi vào Home — không cần bấm nút.
     if (!_bootstrappedBg) {
       _bootstrappedBg = true;
       Future.microtask(_ensureBackgroundAlerts);
     }
   }
 
-  Future<void> _ensureBackgroundAlerts({bool test = false}) async {
-    final ok = await BackgroundMonitor.sync(
-      enabled: true,
-      showTestAlert: test,
-    );
-    final running = await BackgroundMonitor.isRunning();
-    if (!mounted) return;
-    setState(() => _bgRunning = running);
-    if (test) {
-      showAppSnack(
-        context,
-        message: ok && running
-            ? 'Đã bật cảnh báo nền — xem thanh thông báo'
-            : 'Chưa bật được giám sát nền — cấp quyền Thông báo + bỏ tối ưu pin',
-        success: ok && running,
-      );
+  Future<void> _ensureBackgroundAlerts({bool showSnack = false}) async {
+    if (_bgSyncing) return;
+    _bgSyncing = true;
+    try {
+      final ok = await BackgroundMonitor.sync(enabled: true);
+      final running = await BackgroundMonitor.isRunning();
+      if (!mounted) return;
+      setState(() {
+        _bgRunning = running;
+        _bgTried = true;
+      });
+      if (showSnack) {
+        showAppSnack(
+          context,
+          message: ok && running
+              ? 'Cảnh báo nền đang chạy — tắt app vẫn nhận khi có alarm'
+              : 'Chưa bật giám sát nền — hãy cấp quyền Thông báo + bỏ tối ưu pin',
+          success: ok && running,
+        );
+      }
+    } finally {
+      _bgSyncing = false;
     }
   }
 
+  /// Chỉ để kiểm tra popup — không phải điều kiện bật cảnh báo nền.
   Future<void> _testAlertNow() async {
+    await _ensureBackgroundAlerts(showSnack: true);
     await SatloNotifications.showFloodAlert(
       type: 'TEST',
       title: '✅ Thử thông báo SATLO',
-      body: 'Nếu thấy popup này, điện thoại đã nhận được cảnh báo kiểu Shopee.',
+      body:
+          'Đây chỉ là thử. Cảnh báo thật tự hiện khi gateway báo, kể cả khi tắt app.',
     );
-    await _ensureBackgroundAlerts(test: true);
   }
 
   @override
@@ -167,8 +199,10 @@ class _HomePageState extends State<HomePage> {
                             const SizedBox(height: 10),
                             Text(
                               _bgRunning
-                                  ? 'Cảnh báo nền: ĐANG BẬT (tắt app vẫn báo)'
-                                  : 'Cảnh báo nền: CHƯA BẬT — nhấn thử bên dưới',
+                                  ? 'Cảnh báo nền: ĐANG BẬT — có alarm sẽ tự popup (tắt app vẫn báo)'
+                                  : !_bgTried
+                                      ? 'Cảnh báo nền: đang tự khởi động…'
+                                      : 'Cảnh báo nền: chưa chạy — mở Cài đặt cấp Thông báo + bỏ tối ưu pin',
                               style: Theme.of(context)
                                   .textTheme
                                   .bodyMedium
@@ -176,7 +210,9 @@ class _HomePageState extends State<HomePage> {
                                     fontSize: 13,
                                     color: _bgRunning
                                         ? SatloTheme.ok
-                                        : SatloTheme.danger,
+                                        : (!_bgTried
+                                            ? SatloTheme.amber
+                                            : SatloTheme.danger),
                                     fontWeight: FontWeight.w600,
                                   ),
                             ),
@@ -186,7 +222,7 @@ class _HomePageState extends State<HomePage> {
                               child: OutlinedButton.icon(
                                 onPressed: _testAlertNow,
                                 icon: const Icon(Icons.notifications_active_rounded),
-                                label: const Text('Thử thông báo + bật cảnh báo nền'),
+                                label: const Text('Thử popup (tuỳ chọn)'),
                                 style: OutlinedButton.styleFrom(
                                   foregroundColor: SatloTheme.amber,
                                   side: const BorderSide(color: SatloTheme.amber),

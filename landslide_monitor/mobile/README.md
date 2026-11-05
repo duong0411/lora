@@ -11,13 +11,15 @@ App nhận MQTT từ gateway LoRa và bắn thông báo heads-up kiểu Shopee *
 
 Luồng: `ESP32 node → LoRa → Gateway → MQTT alarm → App FG service → notification`
 
-## Bật cảnh báo nền (Android — bắt buộc)
+## Cảnh báo nền (Android — tự chạy)
+
+App **tự bật** giám sát nền khi đăng nhập / vào Home — **không cần** bấm nút thử.
+Nút “Thử popup” chỉ để kiểm tra âm thanh/banner; cảnh báo thật chỉ hiện khi gateway gửi alarm.
 
 1. Đăng nhập + gắn Chip ID (`SATLO_GW01`)
-2. Vào Home → nhấn **Thử thông báo + bật cảnh báo nền**
-3. Cho phép: Thông báo, bỏ tối ưu pin, (nếu hỏi) báo thức chính xác
-4. Kiểm tra khay thông báo có thanh **SATLO đang giám sát**
-5. Vuốt tắt app → vẫn phải thấy thanh đó → khi gateway báo động sẽ popup như Shopee
+2. Lần đầu: cho phép **Thông báo** + **bỏ tối ưu pin** (hệ thống hỏi)
+3. Kiểm tra khay thông báo có thanh **SATLO đang giám sát**
+4. Vuốt tắt app → thanh đó vẫn còn → khi gateway báo động sẽ popup như Shopee
 
 Máy Xiaomi / Oppo / Vivo / Huawei: thêm app vào **tự khởi động** + **không hạn chế pin**.
 

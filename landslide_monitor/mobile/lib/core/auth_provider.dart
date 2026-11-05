@@ -104,7 +104,8 @@ class AuthProvider extends ChangeNotifier {
     AppConfig.setChipId(chipId);
     phase = AuthPhase.home;
     notifyListeners();
-    await BackgroundMonitor.sync(enabled: true, showTestAlert: true);
+    // Tự bật giám sát nền — không cần bấm nút thử; cảnh báo chỉ khi có alarm thật.
+    await BackgroundMonitor.sync(enabled: true);
   }
 
   Future<void> clearBoundChip() async {
