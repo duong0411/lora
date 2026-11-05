@@ -65,10 +65,10 @@ jobs:
           path: landslide_monitor/mobile/dist/landslide_monitor-android.apk
           if-no-files-found: error
 
-  # macos-latest (arm64) hay hết slot → dùng macos-13 (Intel) ổn định hơn
+  # Thử macos-14 trước; nếu queue lâu có thể đổi macos-15 / macos-latest
   build-ios:
     name: Build IPA (unsigned)
-    runs-on: macos-13
+    runs-on: macos-14
     timeout-minutes: 90
     defaults:
       run:
