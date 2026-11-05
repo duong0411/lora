@@ -52,10 +52,10 @@
 #define UI_MS          200
 #define MQTT_RETRY_MS  5000
 #define WIFI_RETRY_MS  10000
-#define TELEMETRY_MS   800    // đẩy phone nhanh; LoRa RX không chờ MQTT
+#define TELEMETRY_MS   1200   // thưa hơn → bớt block MQTT, LoRa RX ổn định hơn
 #define HEART_MS       10000
 #define ALARM_REPUB_MS 8000   // gửi lại alarm đang ON (phone mở muộn vẫn nhận)
-#define LORA_STALE_MS  6000   // node ~1s/gói → WAIT nếu mất ~6s
+#define LORA_STALE_MS  10000  // node ~1s/gói; miss vài gói chưa vội hiện WAIT
 
 // Giống iot_class SmartHome
 #define MQTT_HOST_DEFAULT  "mqtt.duynguyen.io.vn"
@@ -102,6 +102,11 @@ struct NodeData {
 
 NodeData node;
 uint32_t rxCount = 0;
+uint32_t crcErrCount = 0;
+
+#define REG_IRQ_FLAGS     0x12
+#define IRQ_RX_DONE       0x40
+#define IRQ_PAYLOAD_CRC   0x20
 uint32_t lastUiMs = 0;
 uint32_t lastMqttTryMs = 0;
 uint32_t lastWifiTryMs = 0;
@@ -212,21 +217,25 @@ void publishOnline() {
   mqttPub(cfgChipId, "online");
 }
 
+void handleLoRaRx();  // forward — gọi xen giữa MQTT để không miss gói
+
 void publishTelemetry() {
   if (!node.valid) return;
   char buf[64];
 
-  // Publish gọn, chỉ pump WS 1 lần giữa chừng — tránh block LoRa RX
+  // Xen kẽ LoRa RX giữa các MQTT pub — WSS có thể block hàng trăm ms
   snprintf(buf, sizeof(buf), "{\"value\":%.1f}", node.water);
   mqttPub(DEV_WATER, buf);
   snprintf(buf, sizeof(buf), "{\"value\":%.1f}", node.soil);
   mqttPub(DEV_SOIL, buf);
+  if (loraOk) handleLoRaRx();
   wsClient.loop();
 
   snprintf(buf, sizeof(buf), "{\"value\":%.2f}", node.roll);
   mqttPub(DEV_ROLL, buf);
   snprintf(buf, sizeof(buf), "{\"value\":%.2f}", node.pitch);
   mqttPub(DEV_PITCH, buf);
+  if (loraOk) handleLoRaRx();
 
   snprintf(buf, sizeof(buf), "{\"value\":%.3f}", node.ax);
   mqttPub(DEV_AX, buf);
@@ -234,10 +243,12 @@ void publishTelemetry() {
   mqttPub(DEV_AY, buf);
   snprintf(buf, sizeof(buf), "{\"value\":%.3f}", node.az);
   mqttPub(DEV_AZ, buf);
+  if (loraOk) handleLoRaRx();
 
   bool loraLink = (millis() - node.lastRxMs < LORA_STALE_MS);
   mqttPub(DEV_LORA, loraLink ? "{\"value\":\"ONLINE\"}" : "{\"value\":\"OFFLINE\"}");
   wsClient.loop();
+  if (loraOk) handleLoRaRx();
 }
 
 bool publishAlarm(const char *type, const char *title, const char *body, bool on) {
@@ -403,7 +414,18 @@ void checkBootButton(uint32_t now) {
 }
 
 // -------------------- LORA --------------------
+uint8_t lastLoraVersion = 0;
+
+void printLoRaWiring() {
+  Serial.println(F("[LORA] Day SX1278 gateway:"));
+  Serial.println(F("  3V3->3V3  GND->GND  NSS->5  RST->4  DIO0->25"));
+  Serial.println(F("  SCK->18  MISO->19  MOSI->23  ANT=433MHz"));
+  Serial.println(F("  VERSION can = 0x12 | 0x00/0xFF = dut day / mat 3V3"));
+}
+
 uint8_t readLoRaReg(uint8_t reg) {
+  digitalWrite(LORA_NSS, HIGH);
+  delayMicroseconds(5);
   digitalWrite(LORA_NSS, LOW);
   spiLoRa.beginTransaction(SPISettings(LORA_SPI_HZ, MSBFIRST, SPI_MODE0));
   spiLoRa.transfer(reg & 0x7F);
@@ -413,48 +435,95 @@ uint8_t readLoRaReg(uint8_t reg) {
   return v;
 }
 
+void writeLoRaReg(uint8_t reg, uint8_t val) {
+  digitalWrite(LORA_NSS, HIGH);
+  delayMicroseconds(5);
+  digitalWrite(LORA_NSS, LOW);
+  spiLoRa.beginTransaction(SPISettings(LORA_SPI_HZ, MSBFIRST, SPI_MODE0));
+  spiLoRa.transfer(reg | 0x80);
+  spiLoRa.transfer(val);
+  spiLoRa.endTransaction();
+  digitalWrite(LORA_NSS, HIGH);
+}
+
 void hardResetLoRa() {
   pinMode(LORA_NSS, OUTPUT);
   digitalWrite(LORA_NSS, HIGH);
   pinMode(LORA_RST, OUTPUT);
   digitalWrite(LORA_RST, HIGH);
-  delay(10);
+  delay(20);
   digitalWrite(LORA_RST, LOW);
-  delay(10);
+  delay(20);
   digitalWrite(LORA_RST, HIGH);
-  delay(50);
+  delay(80);  // SX1278 can them thoi gian sau reset
 }
 
-bool initLoRa() {
-  pinMode(LORA_DIO0, INPUT);
+void bindLoRaSpi() {
+  // LoRa.begin() co the goi _spi->begin() khong pin → mat map HSPI tren ESP32
   spiLoRa.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
   LoRa.setSPI(spiLoRa);
   LoRa.setSPIFrequency(LORA_SPI_HZ);
   LoRa.setPins(LORA_NSS, LORA_RST, LORA_DIO0);
+}
 
-  for (int attempt = 1; attempt <= 5; attempt++) {
+void applyLoRaRxConfig() {
+  LoRa.setSpreadingFactor(7);
+  LoRa.setSignalBandwidth(125E3);
+  LoRa.setCodingRate4(5);
+  LoRa.enableCrc();
+  LoRa.setSyncWord(LORA_SYNCWORD);
+  LoRa.receive();
+}
+
+bool initLoRa() {
+  Serial.println(F("[LORA] ========== INIT =========="));
+  printLoRaWiring();
+  pinMode(LORA_DIO0, INPUT);
+  pinMode(LORA_NSS, OUTPUT);
+  digitalWrite(LORA_NSS, HIGH);
+  pinMode(LORA_RST, OUTPUT);
+
+  for (int attempt = 1; attempt <= 8; attempt++) {
     hardResetLoRa();
-    uint8_t ver = readLoRaReg(REG_VERSION);
-    Serial.printf("[LORA] try %d/5 VERSION=0x%02X\n", attempt, ver);
-    if (ver != 0x12) {
-      delay(120);
+    bindLoRaSpi();
+    delay(10);
+    lastLoraVersion = readLoRaReg(REG_VERSION);
+    Serial.printf("[LORA] try %d/8 VERSION=0x%02X (can 0x12)\n",
+                  attempt, lastLoraVersion);
+
+    if (lastLoraVersion != 0x12) {
+      delay(150);
       continue;
     }
+
+    // begin() tu reset chip + co the spoil SPI pins → bind lai ngay sau
     if (!LoRa.begin(LORA_FREQ)) {
-      Serial.println(F("[LORA] begin() FAIL"));
-      delay(120);
+      Serial.println(F("[LORA] begin() FAIL — bind SPI lai va thu VERSION"));
+      bindLoRaSpi();
+      lastLoraVersion = readLoRaReg(REG_VERSION);
+      Serial.printf("[LORA] VERSION sau begin fail = 0x%02X\n", lastLoraVersion);
+      delay(150);
       continue;
     }
-    LoRa.setSpreadingFactor(7);
-    LoRa.setSignalBandwidth(125E3);
-    LoRa.setCodingRate4(5);
-    LoRa.enableCrc();
-    LoRa.setSyncWord(LORA_SYNCWORD);
-    LoRa.receive();
-    Serial.printf("[LORA] OK 433MHz SF7 sync=0x%02X\n", (unsigned)LORA_SYNCWORD);
+
+    bindLoRaSpi();
+    lastLoraVersion = readLoRaReg(REG_VERSION);
+    if (lastLoraVersion != 0x12) {
+      Serial.printf("[LORA] mat SPI sau begin (ver=0x%02X) — thu lai\n",
+                    lastLoraVersion);
+      delay(150);
+      continue;
+    }
+
+    applyLoRaRxConfig();
+    Serial.printf("[LORA] OK 433MHz SF7 BW125 sync=0x%02X ver=0x%02X\n",
+                  (unsigned)LORA_SYNCWORD, lastLoraVersion);
+    Serial.println(F("[LORA] ========== INIT OK =========="));
     return true;
   }
-  Serial.println(F("[LORA] FAIL - kiem tra day SX1278 gateway (3V3/GND/NSS/SCK/MOSI/MISO/RST/DIO0/ANT)"));
+
+  Serial.println(F("[LORA] ========== INIT FAIL =========="));
+  printLoRaWiring();
   return false;
 }
 
@@ -551,10 +620,25 @@ void handleAlertsEdgeSync(uint32_t now) {
 }
 
 void handleLoRaRx() {
-  // Drain gói — KHÔNG gọi LoRa.receive() mỗi vòng (reset modem giữa chừng → miss RX)
-  for (;;) {
+  // QUAN TRỌNG: đừng gọi parsePacket() khi chưa có RX_DONE.
+  // Thư viện LoRa mỗi lần parsePacket rỗng sẽ idle()+restart RX → miss gói node.
+  if (!loraOk) return;
+
+  for (int guard = 0; guard < 8; guard++) {
+    uint8_t flags = readLoRaReg(REG_IRQ_FLAGS);
+    if (flags & IRQ_PAYLOAD_CRC) {
+      crcErrCount++;
+      writeLoRaReg(REG_IRQ_FLAGS, flags);  // clear IRQ
+      LoRa.receive();
+      continue;
+    }
+    if ((flags & IRQ_RX_DONE) == 0) break;
+
     int n = LoRa.parsePacket();
-    if (n <= 0) break;
+    if (n <= 0) {
+      LoRa.receive();
+      break;
+    }
 
     char msg[220];
     int i = 0;
@@ -566,6 +650,9 @@ void handleLoRaRx() {
 
     int rssi = LoRa.packetRssi();
     float snr = LoRa.packetSnr();
+
+    // parsePacket() đưa modem về STDBY — phải receive() lại ngay
+    LoRa.receive();
 
     NodeData parsed;
     if (!parseNodePacket(msg, parsed)) {
@@ -608,7 +695,7 @@ void drawUi() {
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
 
-  // Chỉ trạng thái LoRa + MQTT (mất mạng vẫn hiện, không ảnh hưởng LoRa)
+  // FAIL = chip LoRa init lỗi; WAIT = đã init nhưng tạm mất gói từ node
   bool loraLink = loraOk && node.valid && (millis() - node.lastRxMs < LORA_STALE_MS);
   display.printf("LoRa : %s\n", !loraOk ? "FAIL" : (loraLink ? "ONLINE" : "WAIT"));
   display.printf("MQTT : %s\n", mqttOk ? "ONLINE" : "OFFLINE");
@@ -694,6 +781,19 @@ void setup() {
     Serial.println(F("[NET] Mat mang - LoRa/OLED/coi van chay"));
   }
 
+  // Sau WiFi: bind lại SPI + RX (ESP32 đôi khi lệch pin HSPI sau WiFi)
+  if (loraOk) {
+    bindLoRaSpi();
+    lastLoraVersion = readLoRaReg(REG_VERSION);
+    Serial.printf("[LORA] sau WiFi VERSION=0x%02X\n", lastLoraVersion);
+    if (lastLoraVersion != 0x12) {
+      Serial.println(F("[LORA] mat chip sau WiFi — init lai"));
+      loraOk = initLoRa();
+    } else {
+      applyLoRaRxConfig();
+    }
+  }
+
   if (oledOk) {
     display.clearDisplay();
     display.setCursor(0, 0);
@@ -712,6 +812,14 @@ void setup() {
 void loop() {
   uint32_t now = millis();
 
+  // Init fail (ok=0) → thử lại định kỳ (lỏng dây / nguồn tụt lúc boot)
+  static uint32_t lastLoraRetryMs = 0;
+  if (!loraOk && (now - lastLoraRetryMs >= 8000)) {
+    lastLoraRetryMs = now;
+    Serial.println(F("[LORA] retry init..."));
+    loraOk = initLoRa();
+  }
+
   // 1) LoRa trước hết — drain nhanh, không phụ thuộc MQTT
   if (loraOk) handleLoRaRx();
   handleAlertsEdgeSync(now);  // còi local; alarm MQTT thưa, best-effort
@@ -721,14 +829,15 @@ void loop() {
     drawUi();
   }
 
-  // 2) Poll LoRa lại trước khi đụng mạng (OLED/I2C có thể chiếm vài ms)
+  // 2) Poll LoRa lại trước khi đụng mạng
   if (loraOk) handleLoRaRx();
 
   checkBootButton(now);
   ensureWifi(now);
+  if (loraOk) handleLoRaRx();
   ensureMqtt(now);
 
-  // 3) MQTT telemetry xếp hàng — chỉ khi có gói mới + đủ khoảng cách
+  // 3) MQTT telemetry — xen LoRa RX bên trong publishTelemetry()
   if (mqttOk && node.valid && telemetryPending &&
       (now - lastTelemetryMs >= TELEMETRY_MS)) {
     lastTelemetryMs = now;
@@ -737,13 +846,17 @@ void loop() {
     if (loraOk) handleLoRaRx();
   }
 
-  // Heartbeat debug mỗi 3s khi chưa có RX (OLED WAIT)
   static uint32_t lastRxDbgMs = 0;
   if (now - lastRxDbgMs >= 3000) {
     lastRxDbgMs = now;
     uint32_t age = node.valid ? (now - node.lastRxMs) : 0;
-    Serial.printf("[LORA] poll ok=%d rxCount=%lu ageMs=%lu valid=%d\n",
-                  loraOk ? 1 : 0, (unsigned long)rxCount,
+    Serial.printf("[LORA] poll ok=%d ver=0x%02X rx=%lu crcErr=%lu ageMs=%lu valid=%d\n",
+                  loraOk ? 1 : 0, lastLoraVersion,
+                  (unsigned long)rxCount, (unsigned long)crcErrCount,
                   (unsigned long)age, node.valid ? 1 : 0);
+    if (loraOk && rxCount == 0) {
+      Serial.println(F("[LORA] dang nghe — chua co goi tu NODE (kiem tra node TX + anten)"));
+      LoRa.receive();  // giữ continuous RX
+    }
   }
 }

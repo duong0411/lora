@@ -22,15 +22,16 @@ class SatloNotifications {
   static const _channelDesc =
       'Thông báo khẩn khi lượng mưa/độ ẩm cao hoặc sạt lở — kể cả khi tắt app';
 
-  static const _repeatGuard = Duration(seconds: 20);
+  static const _repeatGuard = Duration(seconds: 15);
 
   static bool get _isMobile {
     if (kIsWeb) return false;
     return Platform.isAndroid || Platform.isIOS;
   }
 
-  static Future<void> init() async {
-    if (_ready || !_isMobile) return;
+  static Future<void> init({bool force = false}) async {
+    if (!_isMobile) return;
+    if (_ready && !force) return;
 
     const settings = InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
@@ -74,11 +75,23 @@ class SatloNotifications {
     _ready = true;
   }
 
+  /// Xóa chốt chống spam — gọi khi app vừa tắt để BG còn báo lại được.
+  static Future<void> clearAlertGuards() async {
+    if (!_isMobile) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    final keys = prefs.getKeys().where((k) => k.startsWith('satlo_alert_ms_'));
+    for (final k in keys) {
+      await prefs.remove(k);
+    }
+  }
+
   /// Hiển thị cảnh báo lũ / sạt lở — heads-up + BigText + full-screen intent.
   static Future<void> showFloodAlert({
     required String type,
     required String title,
     required String body,
+    bool force = false,
   }) async {
     if (!_isMobile) return;
     await init();
@@ -88,7 +101,9 @@ class SatloNotifications {
     final key = 'satlo_alert_ms_$type';
     final now = DateTime.now().millisecondsSinceEpoch;
     final prev = prefs.getInt(key) ?? 0;
-    if (now - prev >= 0 && now - prev < _repeatGuard.inMilliseconds) {
+    if (!force &&
+        now - prev >= 0 &&
+        now - prev < _repeatGuard.inMilliseconds) {
       return;
     }
 

@@ -40,8 +40,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Quay lại app → đảm bảo service nền vẫn chạy (OEM có thể giết).
     if (state == AppLifecycleState.resumed) {
+      BackgroundMonitor.setAppForeground(true);
+      unawaited(_ensureBackgroundAlerts());
+    } else if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      // Báo BG: app đang tắt/nền → phải tự bắn notification khi có alarm.
+      BackgroundMonitor.setAppForeground(false);
       unawaited(_ensureBackgroundAlerts());
     }
   }
