@@ -1,1 +1,6 @@
 #include "Generated.xcconfig"
+// CI / unsigned IPA — không cần Apple Development Team
+CODE_SIGNING_ALLOWED=NO
+CODE_SIGNING_REQUIRED=NO
+CODE_SIGN_IDENTITY=-
+DEVELOPMENT_TEAM=

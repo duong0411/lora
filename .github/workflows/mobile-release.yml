@@ -86,41 +86,105 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
-      # Flutter mới vẫn check Development Team dù --no-codesign.
-      # Bypass: config-only + xcodebuild CODE_SIGNING_ALLOWED=NO.
-      - name: Build iOS (unsigned via xcodebuild)
+      # Flutter mới: --no-codesign vẫn fail Development Team / SPM Run Script.
+      # Cách ổn định: tắt SPM, patch signing off, flutter build, fallback xcodebuild.
+      - name: Build iOS (unsigned)
         run: |
           set -euo pipefail
-          flutter build ios --config-only --release --no-codesign
-          cd ios
-          pod install --repo-update
-          xcodebuild \
-            -workspace Runner.xcworkspace \
-            -scheme Runner \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath ../build/ios_derived \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            DEVELOPMENT_TEAM="" \
-            PROVISIONING_PROFILE_SPECIFIER="" \
-            build
-          APP="../build/ios_derived/Build/Products/Release-iphoneos/Runner.app"
+          flutter config --no-enable-swift-package-manager || true
+          flutter precache --ios
+
+          # Tắt codesign trong xcconfig (Flutter + Xcode đều đọc)
+          {
+            echo '#include "Generated.xcconfig"'
+            echo 'CODE_SIGNING_ALLOWED=NO'
+            echo 'CODE_SIGNING_REQUIRED=NO'
+            echo 'CODE_SIGN_IDENTITY=-'
+            echo 'DEVELOPMENT_TEAM='
+          } > ios/Flutter/Release.xcconfig
+          {
+            echo '#include "Generated.xcconfig"'
+            echo 'CODE_SIGNING_ALLOWED=NO'
+            echo 'CODE_SIGNING_REQUIRED=NO'
+            echo 'CODE_SIGN_IDENTITY=-'
+            echo 'DEVELOPMENT_TEAM='
+          } > ios/Flutter/Debug.xcconfig
+
+          # Patch pbxproj: không bắt Team/Automatic signing
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path('ios/Runner.xcodeproj/project.pbxproj')
+          t = p.read_text()
+          t = t.replace('CODE_SIGN_STYLE = Automatic;', 'CODE_SIGN_STYLE = Manual;')
+          needle = 'PRODUCT_BUNDLE_IDENTIFIER = com.duong0411.landslide.landslideMonitor;'
+          inject = (
+              'CODE_SIGNING_ALLOWED = NO;\n'
+              '\t\t\t\tCODE_SIGNING_REQUIRED = NO;\n'
+              '\t\t\t\tCODE_SIGN_IDENTITY = "-";\n'
+              '\t\t\t\tDEVELOPMENT_TEAM = "";\n'
+              '\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.duong0411.landslide.landslideMonitor;'
+          )
+          if 'CODE_SIGNING_ALLOWED = NO;' not in t:
+              t = t.replace(needle, inject)
+          p.write_text(t)
+          print('patched project.pbxproj')
+          PY
+
+          set +e
+          flutter build ios --release --no-codesign -v 2>&1 | tee /tmp/flutter_ios_build.log
+          RC=${PIPESTATUS[0]}
+          set -e
+          echo "flutter build exit=$RC"
+
+          APP=""
+          for cand in \
+            build/ios/iphoneos/Runner.app \
+            build/ios/Release-iphoneos/Runner.app
+          do
+            if [ -d "$cand" ]; then APP="$cand"; break; fi
+          done
+
+          if [ -z "$APP" ]; then
+            echo "No Runner.app from flutter — fallback xcodebuild"
+            cd ios
+            pod install
+            xcodebuild \
+              -workspace Runner.xcworkspace \
+              -scheme Runner \
+              -configuration Release \
+              -sdk iphoneos \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath ../build/ios_derived \
+              COMPILER_INDEX_STORE_ENABLE=NO \
+              VERBOSE_SCRIPT_LOGGING=YES \
+              CODE_SIGN_IDENTITY="-" \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGNING_ALLOWED=NO \
+              DEVELOPMENT_TEAM="" \
+              PROVISIONING_PROFILE_SPECIFIER="" \
+              build
+            cd ..
+            APP="build/ios_derived/Build/Products/Release-iphoneos/Runner.app"
+          fi
+
           test -d "$APP"
-          echo "Built: $APP"
+          echo "APP=$APP"
           ls -lah "$APP"
+          # Persist path for pack step
+          mkdir -p dist
+          echo "$APP" > dist/app_path.txt
 
       - name: Pack unsigned IPA
         run: |
           set -euo pipefail
-          APP="build/ios_derived/Build/Products/Release-iphoneos/Runner.app"
+          APP="$(cat dist/app_path.txt)"
+          test -d "$APP"
+          rm -rf dist/Payload
           mkdir -p dist/Payload
-          rm -rf dist/Payload/*
           cp -R "$APP" dist/Payload/
           (
             cd dist
+            rm -f landslide_monitor-ios-unsigned.ipa
             zip -qry landslide_monitor-ios-unsigned.ipa Payload
           )
           ls -lah dist
