@@ -34,6 +34,11 @@ class SatloProvider extends ChangeNotifier {
   String gatewayOnline = '--';
   String alarm = 'OFF';
   final alerts = <AlertItem>[];
+  bool _tiltLatched = false;
+  bool _wetLatched = false;
+
+  /// Ngưỡng dự phòng khi gateway chưa kịp (hoặc miss) topic alarm.
+  static const double tiltDegThreshold = 25;
 
   bool get hasTelemetry =>
       water != null || soil != null || ax != null || roll != null;
@@ -197,12 +202,16 @@ class SatloProvider extends ChangeNotifier {
       gatewayOnline = '$v'.toUpperCase();
     } else if (topic == AppConfig.topicWater) {
       water = (v as num?)?.toDouble();
+      _maybeWetFromTelemetry();
     } else if (topic == AppConfig.topicSoil) {
       soil = (v as num?)?.toDouble();
+      _maybeWetFromTelemetry();
     } else if (topic == AppConfig.topicRoll) {
       roll = (v as num?)?.toDouble();
+      _maybeTiltFromTelemetry();
     } else if (topic == AppConfig.topicPitch) {
       pitch = (v as num?)?.toDouble();
+      _maybeTiltFromTelemetry();
     } else if (topic == AppConfig.topicAx) {
       ax = (v as num?)?.toDouble();
     } else if (topic == AppConfig.topicAy) {
@@ -217,26 +226,15 @@ class SatloProvider extends ChangeNotifier {
         final value = '${j['value'] ?? ''}'.toUpperCase();
         alarm = value;
         if (value == 'ON') {
-          final type = '${j['type'] ?? 'ALERT'}';
+          final type = '${j['type'] ?? 'ALERT'}'.toUpperCase();
+          if (type == 'TILT') _tiltLatched = true;
+          if (type == 'WET_RISK') _wetLatched = true;
           final mapped = _alertCopy(type, j);
-          final key = '$type|${mapped.title}|${mapped.body}';
-          if (key != lastAlarmKey) {
-            lastAlarmKey = key;
-            alerts.insert(
-              0,
-              AlertItem(type, mapped.title, mapped.body, DateTime.now()),
-            );
-            if (alerts.length > 40) alerts.removeLast();
-            unawaited(
-              SatloNotifications.showFloodAlert(
-                type: type,
-                title: mapped.title,
-                body: mapped.body,
-              ),
-            );
-          }
+          _pushAlert(type, mapped.title, mapped.body);
         } else {
           lastAlarmKey = null;
+          _tiltLatched = false;
+          _wetLatched = false;
         }
       } catch (_) {
         alarm = 'ON';
@@ -250,5 +248,52 @@ class SatloProvider extends ChangeNotifier {
       }
     }
     notifyListeners();
+  }
+
+  void _pushAlert(String type, String title, String body) {
+    final key = '$type|$title|$body';
+    if (key == lastAlarmKey) return;
+    lastAlarmKey = key;
+    alarm = 'ON';
+    alerts.insert(0, AlertItem(type, title, body, DateTime.now()));
+    if (alerts.length > 40) alerts.removeLast();
+    unawaited(
+      SatloNotifications.showFloodAlert(type: type, title: title, body: body),
+    );
+  }
+
+  /// OLED đã NGHIENG nhưng miss MQTT alarm → vẫn báo từ roll/pitch.
+  void _maybeTiltFromTelemetry() {
+    final r = (roll ?? 0).abs();
+    final p = (pitch ?? 0).abs();
+    final hot = r >= tiltDegThreshold || p >= tiltDegThreshold;
+    if (!hot) {
+      _tiltLatched = false;
+      return;
+    }
+    if (_tiltLatched) return;
+    _tiltLatched = true;
+    _pushAlert(
+      'TILT',
+      '⚠️ Cảnh báo nghiêng',
+      'Góc nghiêng R ${r.toStringAsFixed(0)}° · P ${p.toStringAsFixed(0)}° — kiểm tra ngay.',
+    );
+  }
+
+  void _maybeWetFromTelemetry() {
+    final w = water ?? 0;
+    final s = soil ?? 0;
+    final hot = w >= 35 || s >= 70;
+    if (!hot) {
+      _wetLatched = false;
+      return;
+    }
+    if (_wetLatched) return;
+    _wetLatched = true;
+    _pushAlert(
+      'WET_RISK',
+      '⚠️ Cảnh báo nguy cơ lũ!',
+      'Lượng mưa ${w.toStringAsFixed(0)}% · Đất ${s.toStringAsFixed(0)}% — kiểm tra ngay.',
+    );
   }
 }

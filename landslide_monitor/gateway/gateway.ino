@@ -54,6 +54,7 @@
 #define WIFI_RETRY_MS  10000
 #define TELEMETRY_MS   800    // đẩy phone nhanh; LoRa RX không chờ MQTT
 #define HEART_MS       10000
+#define ALARM_REPUB_MS 8000   // gửi lại alarm đang ON (phone mở muộn vẫn nhận)
 #define LORA_STALE_MS  6000   // node ~1s/gói → WAIT nếu mất ~6s
 
 // Giống iot_class SmartHome
@@ -116,6 +117,7 @@ int lastAlertLandslide = 0;
 int lastAlertWet = 0;
 int lastAlertImpact = 0;
 int lastAlertTilt = 0;
+uint32_t lastAlarmRepubMs = 0;
 
 // device suffixes (tele/{CHIP}_{suffix}/status)
 char DEV_WATER[48];
@@ -197,12 +199,13 @@ void saveCfg() {
 }
 
 // -------------------- MQTT (giống iot_class) --------------------
-void mqttPub(const char *dev, const char *payload) {
-  if (!mqttInited || !mqttClient.isConnected()) return;
+bool mqttPub(const char *dev, const char *payload, bool retain = false, int qos = 0) {
+  if (!mqttInited || !mqttClient.isConnected()) return false;
   char topic[80];
   snprintf(topic, sizeof(topic), "tele/%s/status", dev);
-  mqttClient.publish(topic, payload, false, 0);
+  mqttClient.publish(topic, payload, retain, qos);
   // Không Serial từng topic — in log làm chậm loop, dễ miss LoRa
+  return true;
 }
 
 void publishOnline() {
@@ -237,7 +240,7 @@ void publishTelemetry() {
   wsClient.loop();
 }
 
-void publishAlarm(const char *type, const char *title, const char *body, bool on) {
+bool publishAlarm(const char *type, const char *title, const char *body, bool on) {
   char buf[280];
   if (on) {
     snprintf(buf, sizeof(buf),
@@ -247,7 +250,26 @@ void publishAlarm(const char *type, const char *title, const char *body, bool on
   } else {
     snprintf(buf, sizeof(buf), "{\"value\":\"OFF\",\"type\":\"%s\"}", type);
   }
-  mqttPub(DEV_ALARM, buf);
+  // retain=true: phone subscribe muộn vẫn nhận trạng thái alarm cuối
+  return mqttPub(DEV_ALARM, buf, true, 1);
+}
+
+/// Đẩy lại alarm đang active lên MQTT (sau reconnect / phone mở muộn).
+void republishActiveAlarms() {
+  if (!node.valid || !mqttOk) return;
+  if (node.landslide) {
+    publishAlarm("SAT_LO", "Canh bao sat lo!",
+                 "Rung/nghieng + am/nuoc cao - kiem tra ngay", true);
+  } else if (node.wetRisk) {
+    publishAlarm("WET_RISK", "Canh bao nguy co lu!",
+                 "Luong mua va do am dat cao - nguy co ngap/lu", true);
+  } else if (node.impact) {
+    publishAlarm("IMPACT", "Canh bao rung lac",
+                 "IMU phat hien va dap/rung", true);
+  } else if (node.tilt) {
+    publishAlarm("TILT", "Canh bao nghieng",
+                 "Goc nghieng vuot nguong", true);
+  }
 }
 
 void initMqtt() {
@@ -281,8 +303,18 @@ void connectMqtt() {
   }
   Serial.println(F("[MQTT] OK (WSS)"));
   mqttOk = true;
+  // MQTT từng offline lúc nghiêng → lastAlert* đã latch nhưng publish fail.
+  // Reset latch để gửi lại; republishActiveAlarms đẩy ngay nếu đang cảnh báo.
+  lastAlertLandslide = 0;
+  lastAlertWet = 0;
+  lastAlertImpact = 0;
+  lastAlertTilt = 0;
+  lastAlarmRepubMs = 0;
   publishOnline();
-  if (node.valid) publishTelemetry();
+  if (node.valid) {
+    publishTelemetry();
+    republishActiveAlarms();
+  }
 }
 
 void ensureMqtt(uint32_t now) {
@@ -459,52 +491,62 @@ void handleAlertsEdgeSync(uint32_t now) {
   if (buzzUntilMs && now >= buzzUntilMs) buzzOff();
   if (!node.valid) return;
 
+  // Gửi lại định kỳ khi đang ON — phone mở sau / miss QoS0 vẫn nhận được
+  const bool dueRepub = (now - lastAlarmRepubMs >= ALARM_REPUB_MS);
+
   if (node.landslide) {
     if (now - lastBuzzMs >= 1000) { buzzOn(600); lastBuzzMs = now; }
-    if (!lastAlertLandslide) {
-      publishAlarm("SAT_LO", "Canh bao sat lo!",
-                   "Rung/nghieng + am/nuoc cao - kiem tra ngay", true);
-      lastAlertLandslide = 1;
+    if (!lastAlertLandslide || dueRepub) {
+      if (publishAlarm("SAT_LO", "Canh bao sat lo!",
+                       "Rung/nghieng + am/nuoc cao - kiem tra ngay", true)) {
+        lastAlertLandslide = 1;
+        lastAlarmRepubMs = now;
+      }
     }
   } else if (lastAlertLandslide) {
-    publishAlarm("SAT_LO", "", "", false);
-    lastAlertLandslide = 0;
+    if (publishAlarm("SAT_LO", "", "", false)) lastAlertLandslide = 0;
   }
 
   if (node.wetRisk && !node.landslide) {
     if (now - lastBuzzMs >= 1500) { buzzOn(350); lastBuzzMs = now; }
-    if (!lastAlertWet) {
-      publishAlarm("WET_RISK", "Canh bao nguy co lu!",
-                   "Luong mua va do am dat cao - nguy co ngap/lu", true);
-      lastAlertWet = 1;
+    if (!lastAlertWet || dueRepub) {
+      if (publishAlarm("WET_RISK", "Canh bao nguy co lu!",
+                       "Luong mua va do am dat cao - nguy co ngap/lu", true)) {
+        lastAlertWet = 1;
+        lastAlarmRepubMs = now;
+      }
     }
   } else if (!node.wetRisk && lastAlertWet) {
-    publishAlarm("WET_RISK", "", "", false);
-    lastAlertWet = 0;
+    if (publishAlarm("WET_RISK", "", "", false)) lastAlertWet = 0;
   }
 
   if (node.impact && !node.landslide) {
     if (now - lastBuzzMs >= 700) { buzzOn(200); lastBuzzMs = now; }
-    if (!lastAlertImpact) {
-      publishAlarm("IMPACT", "Canh bao rung lac",
-                   "IMU phat hien va dap/rung", true);
-      lastAlertImpact = 1;
+    if (!lastAlertImpact || dueRepub) {
+      if (publishAlarm("IMPACT", "Canh bao rung lac",
+                       "IMU phat hien va dap/rung", true)) {
+        lastAlertImpact = 1;
+        lastAlarmRepubMs = now;
+      }
     }
   } else if (!node.impact && lastAlertImpact) {
-    publishAlarm("IMPACT", "", "", false);
-    lastAlertImpact = 0;
+    if (publishAlarm("IMPACT", "", "", false)) lastAlertImpact = 0;
   }
 
   if (node.tilt && !node.landslide && !node.impact) {
     if (now - lastBuzzMs >= 1200) { buzzOn(120); lastBuzzMs = now; }
-    if (!lastAlertTilt) {
-      publishAlarm("TILT", "Canh bao nghieng",
-                   "Goc nghieng vuot nguong", true);
-      lastAlertTilt = 1;
+    if (!lastAlertTilt || dueRepub) {
+      if (publishAlarm("TILT", "Canh bao nghieng",
+                       "Goc nghieng vuot nguong", true)) {
+        lastAlertTilt = 1;
+        lastAlarmRepubMs = now;
+        Serial.println(F("[ALARM] TILT ON -> MQTT"));
+      } else {
+        Serial.println(F("[ALARM] TILT MQTT fail (chua online)"));
+      }
     }
   } else if (!node.tilt && lastAlertTilt) {
-    publishAlarm("TILT", "", "", false);
-    lastAlertTilt = 0;
+    if (publishAlarm("TILT", "", "", false)) lastAlertTilt = 0;
   }
 }
 

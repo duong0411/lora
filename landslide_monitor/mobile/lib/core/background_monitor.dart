@@ -159,11 +159,17 @@ class SatloBackgroundHandler extends TaskHandler {
   String? _lastAlarmKey;
   double? _water;
   double? _soil;
+  double? _roll;
+  double? _pitch;
   bool _wetLatched = false;
+  bool _tiltLatched = false;
+  static const double _tiltDegThreshold = 25;
 
   String get _alarmTopic => 'tele/${_chip}_alarm/status';
   String get _waterTopic => 'tele/${_chip}_water/status';
   String get _soilTopic => 'tele/${_chip}_soil/status';
+  String get _rollTopic => 'tele/${_chip}_roll/status';
+  String get _pitchTopic => 'tele/${_chip}_pitch/status';
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
@@ -238,6 +244,8 @@ class SatloBackgroundHandler extends TaskHandler {
         c.subscribe(_alarmTopic, MqttQos.atLeastOnce);
         c.subscribe(_waterTopic, MqttQos.atMostOnce);
         c.subscribe(_soilTopic, MqttQos.atMostOnce);
+        c.subscribe(_rollTopic, MqttQos.atMostOnce);
+        c.subscribe(_pitchTopic, MqttQos.atMostOnce);
       };
       c.connectionMessage =
           MqttConnectMessage().withClientIdentifier(cid).startClean();
@@ -254,6 +262,8 @@ class SatloBackgroundHandler extends TaskHandler {
       c.subscribe(_alarmTopic, MqttQos.atLeastOnce);
       c.subscribe(_waterTopic, MqttQos.atMostOnce);
       c.subscribe(_soilTopic, MqttQos.atMostOnce);
+      c.subscribe(_rollTopic, MqttQos.atMostOnce);
+      c.subscribe(_pitchTopic, MqttQos.atMostOnce);
 
       _sub = c.updates?.listen((events) {
         for (final e in events) {
@@ -304,6 +314,18 @@ class SatloBackgroundHandler extends TaskHandler {
       await _maybeWetFromTelemetry();
       return;
     }
+    if (topic == _rollTopic) {
+      final v = _valueOf(payload);
+      if (v is num) _roll = v.toDouble();
+      await _maybeTiltFromTelemetry();
+      return;
+    }
+    if (topic == _pitchTopic) {
+      final v = _valueOf(payload);
+      if (v is num) _pitch = v.toDouble();
+      await _maybeTiltFromTelemetry();
+      return;
+    }
     if (topic != _alarmTopic) return;
 
     try {
@@ -312,9 +334,14 @@ class SatloBackgroundHandler extends TaskHandler {
       final value = '${j['value'] ?? ''}'.toUpperCase();
       if (value != 'ON') {
         _lastAlarmKey = null;
+        _tiltLatched = false;
+        _wetLatched = false;
         return;
       }
       final type = '${j['type'] ?? 'ALERT'}';
+      final t = type.toUpperCase();
+      if (t == 'TILT') _tiltLatched = true;
+      if (t == 'WET_RISK') _wetLatched = true;
       await _fireAlert(
         type: type,
         title: _titleFor(type),
@@ -344,6 +371,25 @@ class SatloBackgroundHandler extends TaskHandler {
       type: 'WET_RISK',
       title: '⚠️ Cảnh báo nguy cơ lũ!',
       body: 'Lượng mưa ${w.toStringAsFixed(0)}% · Đất ${s.toStringAsFixed(0)}% — kiểm tra ngay.',
+    );
+  }
+
+  /// OLED NGHIENG nhưng miss topic alarm → vẫn báo từ roll/pitch.
+  Future<void> _maybeTiltFromTelemetry() async {
+    final r = (_roll ?? 0).abs();
+    final p = (_pitch ?? 0).abs();
+    final hot = r >= _tiltDegThreshold || p >= _tiltDegThreshold;
+    if (!hot) {
+      _tiltLatched = false;
+      return;
+    }
+    if (_tiltLatched) return;
+    _tiltLatched = true;
+    await _fireAlert(
+      type: 'TILT',
+      title: '⚠️ Cảnh báo nghiêng',
+      body:
+          'Góc nghiêng R ${r.toStringAsFixed(0)}° · P ${p.toStringAsFixed(0)}° — kiểm tra ngay.',
     );
   }
 
