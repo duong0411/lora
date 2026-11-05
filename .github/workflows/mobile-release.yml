@@ -86,15 +86,39 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
-      - name: Build iOS (no codesign)
+      # Flutter mới vẫn check Development Team dù --no-codesign.
+      # Bypass: config-only + xcodebuild CODE_SIGNING_ALLOWED=NO.
+      - name: Build iOS (unsigned via xcodebuild)
         run: |
-          flutter build ios --release --no-codesign
-          test -d build/ios/iphoneos/Runner.app
+          set -euo pipefail
+          flutter build ios --config-only --release --no-codesign
+          cd ios
+          pod install --repo-update
+          xcodebuild \
+            -workspace Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath ../build/ios_derived \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            build
+          APP="../build/ios_derived/Build/Products/Release-iphoneos/Runner.app"
+          test -d "$APP"
+          echo "Built: $APP"
+          ls -lah "$APP"
 
       - name: Pack unsigned IPA
         run: |
+          set -euo pipefail
+          APP="build/ios_derived/Build/Products/Release-iphoneos/Runner.app"
           mkdir -p dist/Payload
-          cp -R build/ios/iphoneos/Runner.app dist/Payload/
+          rm -rf dist/Payload/*
+          cp -R "$APP" dist/Payload/
           (
             cd dist
             zip -qry landslide_monitor-ios-unsigned.ipa Payload
