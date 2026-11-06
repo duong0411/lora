@@ -1,13 +1,15 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'alert_store.dart';
 
-/// Heads-up kiểu Shopee — kênh MAX, hoạt động khi tắt app (qua FG service).
+/// Thông báo banner kiểu Facebook (tách khỏi thanh FGS chạy nền).
 class SatloNotifications {
   SatloNotifications._();
 
@@ -16,11 +18,13 @@ class SatloNotifications {
   static bool _ready = false;
   static int _id = 5000;
 
-  /// Channel mới — Android không nâng Importance của channel cũ.
-  static const _channelId = 'satlo_flood_v4';
-  static const _channelName = 'Cảnh báo lũ & sạt lở';
+  /// Key native Android lắng nghe (SatloNativeAlerts.kt).
+  static const nativePushKey = 'satlo_push_alert';
+
+  static const _channelId = 'satlo_facebook_dart_v1';
+  static const _channelName = 'Thông báo cảnh báo';
   static const _channelDesc =
-      'Thông báo khẩn khi lũ/sạt lở — kể cả khi tắt app';
+      'Banner kiểu Facebook khi có lũ/sạt lở — kể cả tắt app';
 
   static bool get _isMobile {
     if (kIsWeb) return false;
@@ -73,7 +77,30 @@ class SatloNotifications {
     _ready = true;
   }
 
-  /// Hiển thị cảnh báo — [force] bỏ qua chốt chống spam ngắn.
+  /// Đường chính khi tắt app: ghi prefs → native Kotlin bắn banner Facebook.
+  static Future<void> _pushNativeAndroid({
+    required String type,
+    required String title,
+    required String body,
+  }) async {
+    if (!Platform.isAndroid) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      // Mỗi lần một nonce → listener luôn nhận thay đổi
+      await prefs.setString(
+        nativePushKey,
+        jsonEncode({
+          'type': type,
+          'title': title,
+          'body': body,
+          'n': DateTime.now().millisecondsSinceEpoch,
+        }),
+      );
+    } catch (e) {
+      if (kDebugMode) debugPrint('native push prefs: $e');
+    }
+  }
+
   static Future<void> showFloodAlert({
     required String type,
     required String title,
@@ -81,68 +108,79 @@ class SatloNotifications {
     bool force = false,
   }) async {
     if (!_isMobile) return;
-    await init();
 
     final now = DateTime.now().millisecondsSinceEpoch;
     if (!force) {
       final last = await AlertStore.lastNotifyMs();
-      // Chống spam cùng phiên ~12s khi app đang mở
-      if (now - last >= 0 && now - last < 12000) return;
+      if (now - last >= 0 && now - last < 10000) return;
     }
 
     final copy = _copyFor(type, title, body);
-    final vibration = Int64List.fromList(
-      type.toUpperCase() == 'SAT_LO'
-          ? <int>[0, 500, 200, 500, 200, 800]
-          : <int>[0, 400, 180, 400, 180, 400],
+
+    // 1) Native Android banner (giống Facebook) — hoạt động khi app đã vuốt
+    await _pushNativeAndroid(
+      type: type,
+      title: copy.title,
+      body: copy.body,
     );
 
-    final details = NotificationDetails(
-      android: AndroidNotificationDetails(
-        _channelId,
-        _channelName,
-        channelDescription: _channelDesc,
-        importance: Importance.max,
-        priority: Priority.max,
-        category: AndroidNotificationCategory.alarm,
-        visibility: NotificationVisibility.public,
-        fullScreenIntent: true,
-        playSound: true,
-        enableVibration: true,
-        vibrationPattern: vibration,
-        ticker: copy.title,
-        icon: '@mipmap/ic_launcher',
-        color: const Color(0xFFEE4D2D),
-        colorized: true,
-        autoCancel: true,
-        ongoing: false,
-        onlyAlertOnce: false,
-        showWhen: true,
-        when: now,
-        styleInformation: BigTextStyleInformation(
-          copy.body,
-          contentTitle: copy.title,
-          summaryText: 'SATLO · Cảnh báo khẩn',
+    // 2) Plugin Dart (khi app còn process / iOS)
+    try {
+      await init();
+      final vibration = Int64List.fromList(
+        type.toUpperCase() == 'SAT_LO'
+            ? <int>[0, 500, 200, 500, 200, 800]
+            : <int>[0, 400, 180, 400, 180, 400],
+      );
+      final details = NotificationDetails(
+        android: AndroidNotificationDetails(
+          _channelId,
+          _channelName,
+          channelDescription: _channelDesc,
+          importance: Importance.max,
+          priority: Priority.max,
+          category: AndroidNotificationCategory.alarm,
+          visibility: NotificationVisibility.public,
+          fullScreenIntent: type.toUpperCase() == 'SAT_LO',
+          playSound: true,
+          enableVibration: true,
+          vibrationPattern: vibration,
+          ticker: copy.title,
+          icon: '@mipmap/ic_launcher',
+          color: const Color(0xFFEE4D2D),
+          colorized: true,
+          autoCancel: true,
+          ongoing: false,
+          onlyAlertOnce: false,
+          showWhen: true,
+          when: now,
+          styleInformation: BigTextStyleInformation(
+            copy.body,
+            contentTitle: copy.title,
+            summaryText: 'SATLO',
+          ),
         ),
-      ),
-      iOS: DarwinNotificationDetails(
-        presentAlert: true,
-        presentBanner: true,
-        presentList: true,
-        presentSound: true,
-        presentBadge: true,
-        interruptionLevel: InterruptionLevel.timeSensitive,
-        subtitle: copy.subtitle,
-      ),
-    );
+        iOS: DarwinNotificationDetails(
+          presentAlert: true,
+          presentBanner: true,
+          presentList: true,
+          presentSound: true,
+          presentBadge: true,
+          interruptionLevel: InterruptionLevel.timeSensitive,
+          subtitle: copy.subtitle,
+        ),
+      );
+      await _plugin.show(
+        _id++,
+        copy.title,
+        copy.body,
+        details,
+        payload: type,
+      );
+    } catch (e) {
+      if (kDebugMode) debugPrint('local notif: $e');
+    }
 
-    await _plugin.show(
-      _id++,
-      copy.title,
-      copy.body,
-      details,
-      payload: type,
-    );
     await AlertStore.markNotified();
   }
 
@@ -188,9 +226,9 @@ class SatloNotifications {
         );
       case 'TEST':
         return (
-          title: title.trim().isEmpty ? '✅ Cảnh báo nền đã bật' : title,
+          title: title.trim().isEmpty ? '✅ Thử thông báo SATLO' : title,
           body: body.trim().isEmpty
-              ? 'Vuốt tắt app vẫn nhận cảnh báo lũ/sạt lở.'
+              ? 'Đây là thông báo kiểu Facebook — tắt app vẫn hiện được.'
               : body,
           subtitle: 'Kiểm tra',
         );

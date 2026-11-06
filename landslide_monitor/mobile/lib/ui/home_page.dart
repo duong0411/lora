@@ -112,7 +112,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     showAppSnack(
       context,
       message: ok && running
-          ? 'Đã bắn thử. Vuốt Home — thanh SATLO phải còn; có alarm sẽ đổi chữ trên thanh đó.'
+          ? 'Đã bắn banner thử (kiểu Facebook). Vuốt Home — thanh chạy nền phải còn.'
           : 'Chưa bật giám sát nền — cấp Thông báo + bỏ tối ưu pin, rồi thử lại.',
       success: ok && running,
     );

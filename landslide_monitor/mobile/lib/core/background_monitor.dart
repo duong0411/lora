@@ -31,25 +31,25 @@ class BackgroundMonitor {
   }
 
   static void configure() {
-    // Channel MAX: updateService lúc alarm → hệ thống tự heads-up + rung + tiếng
+    // Thanh FGS chỉ giữ MQTT chạy nền (im lặng) — cảnh báo = banner Facebook riêng
     FlutterForegroundTask.init(
       androidNotificationOptions: AndroidNotificationOptions(
-        channelId: 'satlo_fg_alert_v5',
-        channelName: 'Cảnh báo sạt lở (nền)',
+        channelId: 'satlo_fg_watch_v6',
+        channelName: 'SATLO chạy nền',
         channelDescription:
-            'Giữ MQTT + bắn cảnh báo khi tắt app. Không tắt thanh này.',
-        channelImportance: NotificationChannelImportance.MAX,
-        priority: NotificationPriority.MAX,
-        enableVibration: true,
-        playSound: true,
-        showBadge: true,
-        onlyAlertOnce: false,
+            'Giữ kết nối MQTT. Cảnh báo hiện bằng thông báo riêng kiểu Facebook.',
+        channelImportance: NotificationChannelImportance.LOW,
+        priority: NotificationPriority.LOW,
+        enableVibration: false,
+        playSound: false,
+        showBadge: false,
+        onlyAlertOnce: true,
         visibility: NotificationVisibility.VISIBILITY_PUBLIC,
         showWhen: true,
       ),
       iosNotificationOptions: const IOSNotificationOptions(
         showNotification: true,
-        playSound: true,
+        playSound: false,
       ),
       foregroundTaskOptions: ForegroundTaskOptions(
         eventAction: ForegroundTaskEventAction.repeat(3000),
@@ -127,19 +127,16 @@ class BackgroundMonitor {
       if (running) {
         FlutterForegroundTask.sendDataToTask(AppConfig.chipId);
         await FlutterForegroundTask.updateService(
-          notificationTitle: 'SATLO đang giám sát',
+          notificationTitle: 'SATLO đang chạy nền',
           notificationText:
-              'Chip ${AppConfig.chipId} — MQTT nền OK. Đừng vuốt tắt thanh này.',
+              'Chip ${AppConfig.chipId} — MQTT OK. Cảnh báo hiện banner riêng.',
         );
         if (showTestAlert) {
-          await _emitNativeAlert(
-            title: '✅ Cảnh báo nền OK',
-            body: 'Tắt app vẫn nhận được nếu giữ thanh SATLO.',
-          );
           await SatloNotifications.showFloodAlert(
             type: 'TEST',
-            title: '✅ Cảnh báo nền OK',
-            body: 'Tắt app vẫn nhận được nếu giữ thanh SATLO.',
+            title: '✅ Thử thông báo SATLO',
+            body:
+                'Banner kiểu Facebook. Vuốt Home — vẫn hiện khi có alarm (giữ thanh chạy nền).',
             force: true,
           );
         }
@@ -148,11 +145,10 @@ class BackgroundMonitor {
 
       final result = await FlutterForegroundTask.startService(
         serviceId: 791,
-        // Chỉ remoteMessaging — dataSync dễ fail start trên Android 14+ nếu thiếu perm
         serviceTypes: const [ForegroundServiceTypes.remoteMessaging],
-        notificationTitle: 'SATLO đang giám sát',
+        notificationTitle: 'SATLO đang chạy nền',
         notificationText:
-            'Chip ${AppConfig.chipId} — tắt app vẫn báo (GIỮ thanh này)',
+            'Chip ${AppConfig.chipId} — giữ thanh này để nhận thông báo khi tắt app',
         callback: satloBackgroundCallback,
       );
 
@@ -166,14 +162,11 @@ class BackgroundMonitor {
       await Future<void>.delayed(const Duration(milliseconds: 800));
 
       if (showTestAlert) {
-        await _emitNativeAlert(
-          title: '✅ Cảnh báo nền đã bật',
-          body: 'Vuốt Home OK. Đừng Force Stop / tắt thanh SATLO.',
-        );
         await SatloNotifications.showFloodAlert(
           type: 'TEST',
-          title: '✅ Cảnh báo nền đã bật',
-          body: 'Vuốt Home OK. Đừng Force Stop / tắt thanh SATLO.',
+          title: '✅ Thử thông báo SATLO',
+          body:
+              'Banner kiểu Facebook. Vuốt Home — vẫn hiện khi có alarm (giữ thanh chạy nền).',
           force: true,
         );
       }
@@ -184,18 +177,6 @@ class BackgroundMonitor {
     }
   }
 
-  /// Cảnh báo qua notification FGS native (hoạt động khi app đã chết).
-  static Future<void> _emitNativeAlert({
-    required String title,
-    required String body,
-  }) async {
-    try {
-      await FlutterForegroundTask.updateService(
-        notificationTitle: title,
-        notificationText: body,
-      );
-    } catch (_) {}
-  }
 }
 
 @pragma('vm:entry-point')
@@ -555,21 +536,21 @@ class SatloBackgroundHandler extends TaskHandler {
     if (persist) {
       await AlertStore.setActive(type: type, title: title, body: body);
     }
-    await AlertStore.markNotified();
-
-    // 1) Đường CHÍNH khi tắt app: notification native của Foreground Service
-    await FlutterForegroundTask.updateService(
-      notificationTitle: title,
-      notificationText: body,
-    );
-
-    // 2) Thêm heads-up riêng (có thể fail trong isolate — không sao)
+    // Banner Facebook riêng (native Kotlin) — không đụng thanh FGS im lặng
     try {
       await SatloNotifications.showFloodAlert(
         type: type,
         title: title,
         body: body,
         force: true,
+      );
+    } catch (_) {}
+
+    // Thanh FGS chỉ báo đang nghe — không thay bằng nội dung alarm
+    try {
+      await FlutterForegroundTask.updateService(
+        notificationTitle: 'SATLO đang chạy nền',
+        notificationText: 'Đã gửi cảnh báo · $_chip',
       );
     } catch (_) {}
   }
