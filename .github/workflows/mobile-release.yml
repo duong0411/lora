@@ -88,6 +88,8 @@ jobs:
 
       # Flutter mới: --no-codesign vẫn fail Development Team / SPM Run Script.
       # Cách ổn định: tắt SPM, patch signing off, flutter build, fallback xcodebuild.
+      # Lỗi Sideloadly trước: IPA ~520B chỉ có thư mục rỗng (thiếu Info.plist) —
+      # vì nhận Runner.app stub. Phải validate Info.plist + binary trước khi pack.
       - name: Build iOS (unsigned)
         run: |
           set -euo pipefail
@@ -130,6 +132,36 @@ jobs:
           print('patched project.pbxproj')
           PY
 
+          is_valid_app() {
+            local app="$1"
+            [ -d "$app" ] && [ -f "$app/Info.plist" ] && {
+              [ -f "$app/Runner" ] || [ -f "$app/Runner.app" ] || \
+              find "$app" -maxdepth 1 -type f -perm +111 | grep -q .
+            }
+          }
+
+          find_valid_app() {
+            local cand
+            for cand in \
+              build/ios/iphoneos/Runner.app \
+              build/ios/Release-iphoneos/Runner.app \
+              build/ios_derived/Build/Products/Release-iphoneos/Runner.app
+            do
+              if is_valid_app "$cand"; then
+                echo "$cand"
+                return 0
+              fi
+            done
+            # Tìm sâu hơn (tránh nhận stub chỉ có Frameworks/)
+            while IFS= read -r cand; do
+              if is_valid_app "$cand"; then
+                echo "$cand"
+                return 0
+              fi
+            done < <(find build -type d -name 'Runner.app' 2>/dev/null | head -n 20)
+            return 1
+          }
+
           set +e
           flutter build ios --release --no-codesign -v 2>&1 | tee /tmp/flutter_ios_build.log
           RC=${PIPESTATUS[0]}
@@ -137,15 +169,12 @@ jobs:
           echo "flutter build exit=$RC"
 
           APP=""
-          for cand in \
-            build/ios/iphoneos/Runner.app \
-            build/ios/Release-iphoneos/Runner.app
-          do
-            if [ -d "$cand" ]; then APP="$cand"; break; fi
-          done
-
-          if [ -z "$APP" ]; then
-            echo "No Runner.app from flutter — fallback xcodebuild"
+          if APP="$(find_valid_app)"; then
+            echo "Found valid Runner.app after flutter: $APP"
+          else
+            echo "Runner.app incomplete/missing — fallback xcodebuild"
+            # Xóa stub rỗng để tránh nhầm lần sau
+            rm -rf build/ios/iphoneos/Runner.app build/ios/Release-iphoneos/Runner.app || true
             cd ios
             pod install
             xcodebuild \
@@ -164,12 +193,17 @@ jobs:
               PROVISIONING_PROFILE_SPECIFIER="" \
               build
             cd ..
-            APP="build/ios_derived/Build/Products/Release-iphoneos/Runner.app"
+            APP="$(find_valid_app)" || {
+              echo "::error::Không tìm thấy Runner.app hợp lệ (thiếu Info.plist / binary)"
+              find build -name 'Runner.app' -type d 2>/dev/null | head -n 30 || true
+              exit 1
+            }
           fi
 
-          test -d "$APP"
           echo "APP=$APP"
           ls -lah "$APP"
+          test -f "$APP/Info.plist"
+          plutil -lint "$APP/Info.plist"
           # Persist path for pack step
           mkdir -p dist
           echo "$APP" > dist/app_path.txt
@@ -179,16 +213,36 @@ jobs:
           set -euo pipefail
           APP="$(cat dist/app_path.txt)"
           test -d "$APP"
-          rm -rf dist/Payload
-          mkdir -p dist/Payload
-          cp -R "$APP" dist/Payload/
+          test -f "$APP/Info.plist"
+
+          rm -rf dist/Payload dist/ipa_stage
+          mkdir -p dist/ipa_stage/Payload
+          # ditto giữ cấu trúc .app tốt hơn cp -R (symlink Frameworks)
+          ditto "$APP" dist/ipa_stage/Payload/Runner.app
+          test -f dist/ipa_stage/Payload/Runner.app/Info.plist
+
           (
-            cd dist
-            rm -f landslide_monitor-ios-unsigned.ipa
-            zip -qry landslide_monitor-ios-unsigned.ipa Payload
+            cd dist/ipa_stage
+            rm -f ../landslide_monitor-ios-unsigned.ipa
+            # -y: store symlinks; IPA phải có Payload/Runner.app/Info.plist
+            zip -qry -y ../landslide_monitor-ios-unsigned.ipa Payload
           )
-          ls -lah dist
-          unzip -l dist/landslide_monitor-ios-unsigned.ipa | head -n 20
+
+          IPA="dist/landslide_monitor-ios-unsigned.ipa"
+          ls -lah "$IPA"
+          SIZE=$(stat -f%z "$IPA")
+          echo "IPA size=$SIZE bytes"
+          if [ "$SIZE" -lt 1000000 ]; then
+            echo "::error::IPA quá nhỏ ($SIZE bytes) — bundle chưa build đủ"
+            unzip -l "$IPA" | head -n 50
+            exit 1
+          fi
+          unzip -l "$IPA" | grep -F "Payload/Runner.app/Info.plist" || {
+            echo "::error::Thiếu Payload/Runner.app/Info.plist trong IPA"
+            unzip -l "$IPA" | head -n 50
+            exit 1
+          }
+          unzip -l "$IPA" | head -n 30
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
