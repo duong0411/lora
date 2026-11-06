@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 
 import 'core/auth_provider.dart';
 import 'core/background_monitor.dart';
+import 'core/fcm_push.dart';
 import 'core/notifications.dart';
 import 'core/satlo_provider.dart';
 import 'ui/connect_page.dart';
@@ -18,6 +19,8 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   FlutterForegroundTask.initCommunicationPort();
   BackgroundMonitor.configure();
+  // FCM: báo khi tắt hẳn app (cần google-services.json + fcm_bridge)
+  await FcmPush.init();
 
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(

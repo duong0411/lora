@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'auth_service.dart';
 import 'background_monitor.dart';
 import 'config.dart';
+import 'fcm_push.dart';
 import 'user_model.dart';
 
 enum AuthPhase { loading, login, connect, home }
@@ -34,7 +35,9 @@ class AuthProvider extends ChangeNotifier {
         phase = AuthPhase.connect;
       } else {
         phase = AuthPhase.home;
-        // Không start service ở đây — phải đợi Home có UI mới xin quyền được
+        // FCM topic (nếu đã cấu hình Firebase)
+        unawaited(FcmPush.subscribeChip(boundChip!));
+        // FG service: đợi Home có UI mới xin quyền được
       }
     } catch (_) {
       phase = AuthPhase.login;
@@ -104,11 +107,13 @@ class AuthProvider extends ChangeNotifier {
     AppConfig.setChipId(chipId);
     phase = AuthPhase.home;
     notifyListeners();
+    await FcmPush.subscribeChip(chipId);
     // Tự bật giám sát nền — không cần bấm nút thử; cảnh báo chỉ khi có alarm thật.
     await BackgroundMonitor.sync(enabled: true);
   }
 
   Future<void> clearBoundChip() async {
+    await FcmPush.unsubscribe();
     await BackgroundMonitor.sync(enabled: false);
     await _svc.clearChipId();
     boundChip = null;
@@ -117,6 +122,7 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    await FcmPush.unsubscribe();
     await BackgroundMonitor.sync(enabled: false);
     await _svc.logout();
     await _svc.clearChipId();

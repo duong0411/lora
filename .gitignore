@@ -31,6 +31,12 @@
 **/ios/ServiceDefinitions.json
 **/ios/Runner/GeneratedPluginRegistrant.*
 
+# Firebase / secrets — không commit
+**/google-services.json
+**/GoogleService-Info.plist
+**/serviceAccount.json
+**/firebase_options.dart
+
 # Misc
 .DS_Store
 Thumbs.db
