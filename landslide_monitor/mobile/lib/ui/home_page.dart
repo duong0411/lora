@@ -7,7 +7,6 @@ import 'package:provider/provider.dart';
 import '../core/auth_provider.dart';
 import '../core/background_monitor.dart';
 import '../core/config.dart';
-import '../core/notifications.dart';
 import '../core/satlo_provider.dart';
 import 'theme.dart';
 import 'widgets/feedback.dart';
@@ -98,14 +97,24 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  /// Chỉ để kiểm tra popup — không phải điều kiện bật cảnh báo nền.
+  /// Thử cảnh báo qua Foreground Service (đường tắt-app thật).
   Future<void> _testAlertNow() async {
-    await _ensureBackgroundAlerts(showSnack: true);
-    await SatloNotifications.showFloodAlert(
-      type: 'TEST',
-      title: '✅ Thử thông báo SATLO',
-      body:
-          'Đây chỉ là thử. Cảnh báo thật tự hiện khi gateway báo, kể cả khi tắt app.',
+    final ok = await BackgroundMonitor.sync(
+      enabled: true,
+      showTestAlert: true,
+    );
+    final running = await BackgroundMonitor.isRunning();
+    if (!mounted) return;
+    setState(() {
+      _bgRunning = running;
+      _bgTried = true;
+    });
+    showAppSnack(
+      context,
+      message: ok && running
+          ? 'Đã bắn thử. Vuốt Home — thanh SATLO phải còn; có alarm sẽ đổi chữ trên thanh đó.'
+          : 'Chưa bật giám sát nền — cấp Thông báo + bỏ tối ưu pin, rồi thử lại.',
+      success: ok && running,
     );
   }
 

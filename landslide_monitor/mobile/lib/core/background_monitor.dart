@@ -14,9 +14,16 @@ import 'alert_store.dart';
 import 'config.dart';
 import 'notifications.dart';
 
-/// MQTT nền + heads-up khi tắt/vuốt app (không phụ thuộc mở UI).
+/// MQTT trong Foreground Service — cảnh báo khi tắt app.
+///
+/// Quan trọng: heads-up chính đi qua [FlutterForegroundTask.updateService]
+/// (notification native của FGS). Plugin local-notifications trong isolate
+/// nền thường không hiện khi app đã bị vuốt.
 class BackgroundMonitor {
   BackgroundMonitor._();
+
+  static const _prefsChipKey = 'satlo_chip_id';
+  static const _taskChipKey = 'chip_id';
 
   static bool get _mobile {
     if (kIsWeb) return false;
@@ -24,26 +31,28 @@ class BackgroundMonitor {
   }
 
   static void configure() {
+    // Channel MAX: updateService lúc alarm → hệ thống tự heads-up + rung + tiếng
     FlutterForegroundTask.init(
       androidNotificationOptions: AndroidNotificationOptions(
-        channelId: 'satlo_fg_watch_v4',
-        channelName: 'Giám sát sạt lở (nền)',
+        channelId: 'satlo_fg_alert_v5',
+        channelName: 'Cảnh báo sạt lở (nền)',
         channelDescription:
-            'Giữ MQTT khi tắt app — đừng vuốt tắt thanh “SATLO đang giám sát”',
-        channelImportance: NotificationChannelImportance.LOW,
-        priority: NotificationPriority.LOW,
-        enableVibration: false,
-        playSound: false,
-        onlyAlertOnce: true,
+            'Giữ MQTT + bắn cảnh báo khi tắt app. Không tắt thanh này.',
+        channelImportance: NotificationChannelImportance.MAX,
+        priority: NotificationPriority.MAX,
+        enableVibration: true,
+        playSound: true,
+        showBadge: true,
+        onlyAlertOnce: false,
         visibility: NotificationVisibility.VISIBILITY_PUBLIC,
         showWhen: true,
       ),
       iosNotificationOptions: const IOSNotificationOptions(
         showNotification: true,
-        playSound: false,
+        playSound: true,
       ),
       foregroundTaskOptions: ForegroundTaskOptions(
-        eventAction: ForegroundTaskEventAction.repeat(4000),
+        eventAction: ForegroundTaskEventAction.repeat(3000),
         autoRunOnBoot: true,
         autoRunOnMyPackageReplaced: true,
         allowWakeLock: true,
@@ -72,6 +81,18 @@ class BackgroundMonitor {
     } catch (_) {}
   }
 
+  static Future<void> _persistChip(String chip) async {
+    final id = chip.trim().isEmpty ? AppConfig.defaultChipId : chip.trim();
+    AppConfig.setChipId(id);
+    try {
+      await FlutterForegroundTask.saveData(key: _taskChipKey, value: id);
+    } catch (_) {}
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_prefsChipKey, id);
+    } catch (_) {}
+  }
+
   static Future<bool> sync({
     required bool enabled,
     bool showTestAlert = false,
@@ -86,73 +107,94 @@ class BackgroundMonitor {
       }
 
       await SatloNotifications.init();
+      await _persistChip(AppConfig.chipId);
 
-      final notifPerm =
+      var notifPerm =
           await FlutterForegroundTask.checkNotificationPermission();
       if (notifPerm != NotificationPermission.granted) {
         await FlutterForegroundTask.requestNotificationPermission();
+        notifPerm =
+            await FlutterForegroundTask.checkNotificationPermission();
       }
-      await FlutterForegroundTask.requestNotificationPermission();
 
       if (Platform.isAndroid) {
         if (!await FlutterForegroundTask.isIgnoringBatteryOptimizations) {
           await FlutterForegroundTask.requestIgnoreBatteryOptimization();
         }
-        try {
-          if (!await FlutterForegroundTask.canScheduleExactAlarms) {
-            await FlutterForegroundTask.openAlarmsAndRemindersSettings();
-          }
-        } catch (_) {}
       }
 
-      // Đẩy chipId sang isolate nền
-      FlutterForegroundTask.sendDataToTask(AppConfig.chipId);
-
-      if (await FlutterForegroundTask.isRunningService) {
+      final running = await FlutterForegroundTask.isRunningService;
+      if (running) {
+        FlutterForegroundTask.sendDataToTask(AppConfig.chipId);
+        await FlutterForegroundTask.updateService(
+          notificationTitle: 'SATLO đang giám sát',
+          notificationText:
+              'Chip ${AppConfig.chipId} — MQTT nền OK. Đừng vuốt tắt thanh này.',
+        );
         if (showTestAlert) {
+          await _emitNativeAlert(
+            title: '✅ Cảnh báo nền OK',
+            body: 'Tắt app vẫn nhận được nếu giữ thanh SATLO.',
+          );
           await SatloNotifications.showFloodAlert(
             type: 'TEST',
-            title: '✅ Cảnh báo nền đã bật',
-            body:
-                'Vuốt tắt app vẫn nhận cảnh báo. Giữ thanh “SATLO đang giám sát”.',
+            title: '✅ Cảnh báo nền OK',
+            body: 'Tắt app vẫn nhận được nếu giữ thanh SATLO.',
             force: true,
           );
         }
-        return true;
+        return notifPerm == NotificationPermission.granted;
       }
 
       final result = await FlutterForegroundTask.startService(
         serviceId: 791,
-        serviceTypes: const [
-          ForegroundServiceTypes.remoteMessaging,
-          ForegroundServiceTypes.dataSync,
-        ],
+        // Chỉ remoteMessaging — dataSync dễ fail start trên Android 14+ nếu thiếu perm
+        serviceTypes: const [ForegroundServiceTypes.remoteMessaging],
         notificationTitle: 'SATLO đang giám sát',
         notificationText:
-            'Chip ${AppConfig.chipId} — tắt app vẫn báo (giữ thanh này)',
+            'Chip ${AppConfig.chipId} — tắt app vẫn báo (GIỮ thanh này)',
         callback: satloBackgroundCallback,
       );
 
       final ok = result is! ServiceRequestFailure;
-      if (!ok && kDebugMode) {
-        debugPrint('BackgroundMonitor start: $result');
+      if (!ok) {
+        if (kDebugMode) debugPrint('BackgroundMonitor start FAIL: $result');
+        return false;
       }
 
-      if (ok && showTestAlert) {
-        await Future<void>.delayed(const Duration(milliseconds: 500));
+      FlutterForegroundTask.sendDataToTask(AppConfig.chipId);
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+
+      if (showTestAlert) {
+        await _emitNativeAlert(
+          title: '✅ Cảnh báo nền đã bật',
+          body: 'Vuốt Home OK. Đừng Force Stop / tắt thanh SATLO.',
+        );
         await SatloNotifications.showFloodAlert(
           type: 'TEST',
           title: '✅ Cảnh báo nền đã bật',
-          body:
-              'Vuốt tắt app vẫn nhận cảnh báo. Giữ thanh “SATLO đang giám sát”.',
+          body: 'Vuốt Home OK. Đừng Force Stop / tắt thanh SATLO.',
           force: true,
         );
       }
-      return ok;
+      return true;
     } catch (e, st) {
       if (kDebugMode) debugPrint('BackgroundMonitor.sync: $e\n$st');
       return false;
     }
+  }
+
+  /// Cảnh báo qua notification FGS native (hoạt động khi app đã chết).
+  static Future<void> _emitNativeAlert({
+    required String title,
+    required String body,
+  }) async {
+    try {
+      await FlutterForegroundTask.updateService(
+        notificationTitle: title,
+        notificationText: body,
+      );
+    } catch (_) {}
   }
 }
 
@@ -167,7 +209,6 @@ class SatloBackgroundHandler extends TaskHandler {
   MqttServerClient? _client;
   StreamSubscription<List<MqttReceivedMessage<MqttMessage>>>? _sub;
   bool _busy = false;
-  // false = mặc định coi app đã tắt → luôn được bắn notify
   bool _appForeground = false;
   int _lastFgHeartbeatMs = 0;
   String _chip = AppConfig.defaultChipId;
@@ -180,9 +221,8 @@ class SatloBackgroundHandler extends TaskHandler {
   bool _wetLatched = false;
   bool _tiltLatched = false;
   static const double _tiltDegThreshold = 25;
-  /// Báo lại định kỳ khi alarm còn ON + app đang nền
-  static const int _realertMs = 20000;
-  static const int _dedupeMs = 8000;
+  static const int _realertMs = 25000;
+  static const int _dedupeMs = 6000;
 
   String get _alarmTopic => 'tele/${_chip}_alarm/status';
   String get _waterTopic => 'tele/${_chip}_water/status';
@@ -192,10 +232,12 @@ class SatloBackgroundHandler extends TaskHandler {
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
-    await Future<void>.delayed(const Duration(milliseconds: 400));
-    await SatloNotifications.init(force: true);
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    await _loadChip();
+    try {
+      await SatloNotifications.init(force: true);
+    } catch (_) {}
     await _openMqtt(force: true);
-    // Alarm còn ON từ lần trước (UI đã lưu) → bắn ngay khi service start
     await _realertFromStore(force: true);
   }
 
@@ -204,8 +246,7 @@ class SatloBackgroundHandler extends TaskHandler {
     final now = DateTime.now().millisecondsSinceEpoch;
     if (_appForeground &&
         _lastFgHeartbeatMs > 0 &&
-        now - _lastFgHeartbeatMs > 8000) {
-      // UI chết / không heartbeat → coi như app đã tắt
+        now - _lastFgHeartbeatMs > 6000) {
       _appForeground = false;
     }
     unawaited(_onTick());
@@ -213,11 +254,11 @@ class SatloBackgroundHandler extends TaskHandler {
 
   Future<void> _onTick() async {
     final c = _client;
-    if (c == null ||
-        c.connectionStatus?.state != MqttConnectionState.connected) {
-      await _openMqtt(force: false);
+    final st = c?.connectionStatus?.state;
+    if (c == null || st != MqttConnectionState.connected) {
+      await _openMqtt(force: true);
     }
-    // App đang nền + alarm còn ON → heads-up lại (không cần mở app)
+    // Luôn realert khi app không mở — kể cả vừa vuốt Home
     if (!_appForeground) {
       await _realertFromStore(force: false);
     }
@@ -247,27 +288,51 @@ class SatloBackgroundHandler extends TaskHandler {
       unawaited(_onAppWentBackground());
       return;
     }
-    if (msg.isEmpty || msg == _chip) return;
-    _chip = msg;
-    unawaited(_openMqtt(force: true));
+    if (msg.isEmpty) return;
+    if (msg != _chip) {
+      _chip = msg;
+      unawaited(
+        FlutterForegroundTask.saveData(key: 'chip_id', value: _chip),
+      );
+      unawaited(_openMqtt(force: true));
+    }
+  }
+
+  Future<void> _loadChip() async {
+    try {
+      final fromTask =
+          await FlutterForegroundTask.getData<String>(key: 'chip_id');
+      if (fromTask != null && fromTask.trim().isNotEmpty) {
+        _chip = fromTask.trim();
+        AppConfig.setChipId(_chip);
+        return;
+      }
+    } catch (_) {}
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      final saved = prefs.getString('satlo_chip_id');
+      if (saved != null && saved.trim().isNotEmpty) {
+        _chip = saved.trim();
+        AppConfig.setChipId(_chip);
+      }
+    } catch (_) {}
   }
 
   Future<void> _onAppWentBackground() async {
-    await SatloNotifications.init(force: true);
     await FlutterForegroundTask.updateService(
       notificationTitle: 'SATLO đang giám sát',
-      notificationText: 'App đã tắt — vẫn báo khi có alarm',
+      notificationText: 'App đã tắt — đang nghe MQTT $_chip',
     );
-    // Bắn lại alarm đang ON (kể cả chỉ UI nhận trước đó)
     await _realertFromStore(force: true);
   }
 
   Future<void> _realertFromStore({required bool force}) async {
     final a = await AlertStore.read();
     if (a == null) return;
-    final now = DateTime.now().millisecondsSinceEpoch;
     if (!force) {
       final last = await AlertStore.lastNotifyMs();
+      final now = DateTime.now().millisecondsSinceEpoch;
       if (now - last < _realertMs) return;
     }
     await _fireAlert(
@@ -286,13 +351,7 @@ class SatloBackgroundHandler extends TaskHandler {
     if (!force && connected) return;
     _busy = true;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.reload();
-      final saved = prefs.getString('satlo_chip_id');
-      _chip = (saved == null || saved.trim().isEmpty)
-          ? (_chip.isEmpty ? AppConfig.defaultChipId : _chip)
-          : saved.trim();
-      AppConfig.setChipId(_chip);
+      await _loadChip();
 
       await _sub?.cancel();
       try {
@@ -310,47 +369,37 @@ class SatloBackgroundHandler extends TaskHandler {
       c.secure = false;
       c.websocketProtocols = MqttClientConstants.protocolsSingleDefault;
       c.logging(on: false);
-      c.keepAlivePeriod = 15;
+      c.keepAlivePeriod = 12;
       c.autoReconnect = true;
       c.resubscribeOnAutoReconnect = true;
-      c.onConnected = () {
-        _subscribeAll(c);
-      };
+      c.onConnected = () => _subscribeAll(c);
+      c.onAutoReconnect = () {};
+      c.onAutoReconnected = () => _subscribeAll(c);
       c.connectionMessage =
           MqttConnectMessage().withClientIdentifier(cid).startClean();
 
-      await c.connect().timeout(const Duration(seconds: 15));
+      await c.connect().timeout(const Duration(seconds: 20));
       if (c.connectionStatus?.state != MqttConnectionState.connected) {
         await FlutterForegroundTask.updateService(
-          notificationTitle: 'SATLO đang giám sát',
-          notificationText: 'Chưa nối MQTT $_chip — đang thử lại',
+          notificationTitle: 'SATLO — mất MQTT',
+          notificationText: 'Đang thử lại chip $_chip',
         );
         return;
       }
 
       _subscribeAll(c);
-
-      _sub = c.updates?.listen((events) {
-        for (final e in events) {
-          final rec = e.payload as MqttPublishMessage;
-          final payload =
-              MqttPublishPayload.bytesToStringAsString(rec.payload.message);
-          unawaited(_onMessage(e.topic, payload));
-        }
-      });
-
+      _sub = c.updates?.listen(_onMqttEvents);
       _client = c;
+
       await FlutterForegroundTask.updateService(
         notificationTitle: 'SATLO đang giám sát',
-        notificationText: _appForeground
-            ? 'Máy $_chip online'
-            : 'Máy $_chip online — tắt app vẫn báo động',
+        notificationText: 'MQTT OK · $_chip · tắt app vẫn báo',
       );
     } catch (e) {
-      if (kDebugMode) debugPrint('SatloBackgroundHandler: $e');
+      if (kDebugMode) debugPrint('SatloBackgroundHandler MQTT: $e');
       await FlutterForegroundTask.updateService(
-        notificationTitle: 'SATLO đang giám sát',
-        notificationText: 'Mất kết nối — đang thử lại',
+        notificationTitle: 'SATLO — mất MQTT',
+        notificationText: 'Đang thử lại...',
       );
     } finally {
       _busy = false;
@@ -363,6 +412,15 @@ class SatloBackgroundHandler extends TaskHandler {
     c.subscribe(_soilTopic, MqttQos.atMostOnce);
     c.subscribe(_rollTopic, MqttQos.atMostOnce);
     c.subscribe(_pitchTopic, MqttQos.atMostOnce);
+  }
+
+  void _onMqttEvents(List<MqttReceivedMessage<MqttMessage>> events) {
+    for (final e in events) {
+      final rec = e.payload as MqttPublishMessage;
+      final payload =
+          MqttPublishPayload.bytesToStringAsString(rec.payload.message);
+      unawaited(_onMessage(e.topic, payload));
+    }
   }
 
   dynamic _valueOf(String payload) {
@@ -413,15 +471,22 @@ class SatloBackgroundHandler extends TaskHandler {
         _tiltLatched = false;
         _wetLatched = false;
         await AlertStore.clear();
+        await FlutterForegroundTask.updateService(
+          notificationTitle: 'SATLO đang giám sát',
+          notificationText: 'MQTT OK · $_chip · tắt app vẫn báo',
+        );
         return;
       }
       final type = '${j['type'] ?? 'ALERT'}';
       final t = type.toUpperCase();
       if (t == 'TILT') _tiltLatched = true;
       if (t == 'WET_RISK') _wetLatched = true;
-      final title = _titleFor(type);
-      final body = _bodyFor(type, j);
-      await _fireAlert(type: type, title: title, body: body, forceNotify: true);
+      await _fireAlert(
+        type: type,
+        title: _titleFor(type),
+        body: _bodyFor(type, j),
+        forceNotify: true,
+      );
     } catch (_) {
       await _fireAlert(
         type: 'ALERT',
@@ -442,13 +507,11 @@ class SatloBackgroundHandler extends TaskHandler {
     }
     if (_wetLatched) return;
     _wetLatched = true;
-    final title = '⚠️ Cảnh báo nguy cơ lũ!';
-    final body =
-        'Lượng mưa ${w.toStringAsFixed(0)}% · Đất ${s.toStringAsFixed(0)}% — kiểm tra ngay.';
     await _fireAlert(
       type: 'WET_RISK',
-      title: title,
-      body: body,
+      title: '⚠️ Cảnh báo nguy cơ lũ!',
+      body:
+          'Lượng mưa ${w.toStringAsFixed(0)}% · Đất ${s.toStringAsFixed(0)}% — kiểm tra ngay.',
       forceNotify: true,
     );
   }
@@ -463,13 +526,11 @@ class SatloBackgroundHandler extends TaskHandler {
     }
     if (_tiltLatched) return;
     _tiltLatched = true;
-    final title = '⚠️ Cảnh báo nghiêng';
-    final body =
-        'Góc nghiêng R ${r.toStringAsFixed(0)}° · P ${p.toStringAsFixed(0)}° — kiểm tra ngay.';
     await _fireAlert(
       type: 'TILT',
-      title: title,
-      body: body,
+      title: '⚠️ Cảnh báo nghiêng',
+      body:
+          'Góc nghiêng R ${r.toStringAsFixed(0)}° · P ${p.toStringAsFixed(0)}° — kiểm tra ngay.',
       forceNotify: true,
     );
   }
@@ -494,22 +555,23 @@ class SatloBackgroundHandler extends TaskHandler {
     if (persist) {
       await AlertStore.setActive(type: type, title: title, body: body);
     }
+    await AlertStore.markNotified();
 
-    // LUÔN bắn heads-up từ service nền khi app không mở.
-    // Khi app đang mở: vẫn bắn (force) nếu forceNotify — UI cũng hiện banner.
-    final mustNotify = forceNotify || !_appForeground;
-    if (!mustNotify) return;
-
-    await SatloNotifications.showFloodAlert(
-      type: type,
-      title: title,
-      body: body,
-      force: true,
-    );
+    // 1) Đường CHÍNH khi tắt app: notification native của Foreground Service
     await FlutterForegroundTask.updateService(
       notificationTitle: title,
-      notificationText: _appForeground ? body : '🚨 $title — tắt app vẫn báo',
+      notificationText: body,
     );
+
+    // 2) Thêm heads-up riêng (có thể fail trong isolate — không sao)
+    try {
+      await SatloNotifications.showFloodAlert(
+        type: type,
+        title: title,
+        body: body,
+        force: true,
+      );
+    } catch (_) {}
   }
 
   String _titleFor(String type) {

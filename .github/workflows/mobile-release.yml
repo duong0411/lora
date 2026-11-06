@@ -52,7 +52,7 @@ jobs:
       - name: Build APK (release)
         run: |
           set -euo pipefail
-          flutter build apk --release -v 2>&1 | tee /tmp/flutter_apk.log
+          flutter build apk --release
           test -f build/app/outputs/flutter-apk/app-release.apk
 
       - name: Rename artifact

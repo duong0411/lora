@@ -42,7 +42,7 @@
         <!-- stopWithTask=false: vuốt tắt app vẫn giữ MQTT + cảnh báo kiểu Shopee -->
         <service
             android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
-            android:foregroundServiceType="remoteMessaging|dataSync"
+            android:foregroundServiceType="remoteMessaging"
             android:exported="false"
             android:stopWithTask="false" />
         <receiver
