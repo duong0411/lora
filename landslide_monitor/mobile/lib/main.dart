@@ -46,20 +46,29 @@ class _LandslideAppState extends State<LandslideApp>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _startFgHeartbeat();
+  }
+
+  void _startFgHeartbeat() {
+    _fgHeartbeat?.cancel();
     BackgroundMonitor.setAppForeground(true);
-    _fgHeartbeat = Timer.periodic(const Duration(seconds: 4), (_) {
-      BackgroundMonitor.setAppForeground(true);
+    _fgHeartbeat = Timer.periodic(const Duration(seconds: 3), (_) {
       try {
         FlutterForegroundTask.sendDataToTask('APP_FG_HEARTBEAT');
       } catch (_) {}
     });
   }
 
+  void _stopFgHeartbeat() {
+    _fgHeartbeat?.cancel();
+    _fgHeartbeat = null;
+    BackgroundMonitor.setAppForeground(false);
+  }
+
   @override
   void dispose() {
-    _fgHeartbeat?.cancel();
+    _stopFgHeartbeat();
     WidgetsBinding.instance.removeObserver(this);
-    BackgroundMonitor.setAppForeground(false);
     _satlo.dispose();
     _auth.dispose();
     super.dispose();
@@ -67,18 +76,11 @@ class _LandslideAppState extends State<LandslideApp>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final open = state == AppLifecycleState.resumed;
-    BackgroundMonitor.setAppForeground(open);
-    if (open) {
-      _fgHeartbeat?.cancel();
-      _fgHeartbeat = Timer.periodic(const Duration(seconds: 4), (_) {
-        try {
-          FlutterForegroundTask.sendDataToTask('APP_FG_HEARTBEAT');
-        } catch (_) {}
-      });
+    // Chỉ coi là "đang mở" khi resumed — còn lại BG phải tự bắn notify
+    if (state == AppLifecycleState.resumed) {
+      _startFgHeartbeat();
     } else {
-      _fgHeartbeat?.cancel();
-      _fgHeartbeat = null;
+      _stopFgHeartbeat();
     }
   }
 
@@ -89,11 +91,13 @@ class _LandslideAppState extends State<LandslideApp>
         ChangeNotifierProvider.value(value: _auth),
         ChangeNotifierProvider.value(value: _satlo),
       ],
-      child: MaterialApp(
-        title: 'Cảnh báo Sạt lở',
-        debugShowCheckedModeBanner: false,
-        theme: SatloTheme.dark(),
-        home: const _RootGate(),
+      child: WithForegroundTask(
+        child: MaterialApp(
+          title: 'Cảnh báo Sạt lở',
+          debugShowCheckedModeBanner: false,
+          theme: SatloTheme.dark(),
+          home: const _RootGate(),
+        ),
       ),
     );
   }

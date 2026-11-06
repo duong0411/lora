@@ -695,13 +695,27 @@ void drawUi() {
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
 
-  // FAIL = chip LoRa init lỗi; WAIT = đã init nhưng tạm mất gói từ node
+  // FAIL = chip LoRa init lỗi; WAIT = đã init nhưng chưa/mất gói từ node
   bool loraLink = loraOk && node.valid && (millis() - node.lastRxMs < LORA_STALE_MS);
   display.printf("LoRa : %s\n", !loraOk ? "FAIL" : (loraLink ? "ONLINE" : "WAIT"));
   display.printf("MQTT : %s\n", mqttOk ? "ONLINE" : "OFFLINE");
 
-  if (!node.valid) {
-    display.println(F("Cho edge node..."));
+  if (!loraOk) {
+    display.println(F("SX1278 SPI loi"));
+    display.printf("ver=0x%02X\n", lastLoraVersion);
+  } else if (!node.valid) {
+    // Chưa từng nhận NODE,... — thường do node tắt / anten / khoảng cách
+    display.printf("rx=%lu crc=%lu\n",
+                   (unsigned long)rxCount, (unsigned long)crcErrCount);
+    display.println(F("Cho node TX..."));
+    display.println(F("check anten 433"));
+  } else if (!loraLink) {
+    // Đã từng có gói nhưng >10s không còn
+    uint32_t age = (millis() - node.lastRxMs) / 1000UL;
+    display.printf("mat goi %lus\n", (unsigned long)age);
+    display.printf("rx=%lu rssi=%d\n",
+                   (unsigned long)rxCount, node.rssi);
+    display.println(F("node xa/tat?"));
   } else {
     display.printf("Luong mua: %4.1f%%\n", node.water);
     display.printf("Do am dat: %4.1f%%\n", node.soil);

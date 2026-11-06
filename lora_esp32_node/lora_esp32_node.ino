@@ -46,7 +46,7 @@
 #define LORA_TX_POWER_DBM  17
 #define NODE_ID            1
 
-#define SEND_INTERVAL_MS   1000   // ~1s/gói — realtime hơn (cảnh báo vẫn gửi ngay)
+#define SEND_INTERVAL_MS   1000   // ~1s/gói (như bản cũ)
 
 // ===================== LOG Serial =====================
 #define LOG_SENSOR_MS      1000   // chu kỳ in trạng thái cảm biến
@@ -76,8 +76,11 @@
 #define MPU_SAMPLE_MS      20
 #define EMA_ALPHA          0.18f  // 0..1 — càng nhỏ càng mượt
 #define COMP_FILTER_ALPHA  0.96f  // tỷ trọng gyro trong complementary filter
-#define IMPACT_THRESHOLD_G 1.8f   // ngưỡng phát hiện va đập (|a| - 1g)
-#define TILT_ALERT_DEG     25.0f  // nghiêng quá ngưỡng -> cảnh báo / còi
+#define IMPACT_THRESHOLD_G 2.4f   // cao hơn — tránh nhiễu MPU khi để yên
+#define TILT_ALERT_DEG     35.0f  // nghiêng rõ mới cảnh báo
+// 0 = để yên không kêu vì rung/nghiêng (vẫn gửi flag qua LoRa)
+// 1 = kêu cả impact/tilt (dễ ù khi bàn rung / nhiễu)
+#define BUZZER_ON_MOTION   0
 #define BUZZER_IMPACT_MS   180
 #define BUZZER_ALERT_MS    80
 #define BUZZER_WET_MS      350       // còi: nước + ẩm cao (đủ dài để nghe)
@@ -383,6 +386,7 @@ void buzzOff() {
   ledcWriteTone(BUZZER_CH, 0);
   ledcWrite(BUZZER_CH, 0);
 #endif
+  digitalWrite(PIN_BUZZER, LOW);  // ép LOW — giảm “tích” nhiễu RF lúc LoRa TX
   buzzUntilMs = 0;
 }
 
@@ -400,13 +404,11 @@ void buzzOn(uint32_t durationMs) {
 }
 
 void buzzerSelfTest() {
-  Serial.println(F("[BUZZER] self-test x3 - ban phai nghe tieng"));
-  for (int i = 0; i < 3; i++) {
-    buzzOn(300);
-    delay(320);
-    buzzOff();
-    delay(180);
-  }
+  // 1 tiếng ngắn lúc boot — tránh ù ù như self-test x3
+  Serial.println(F("[BUZZER] self-test 1x"));
+  buzzOn(120);
+  delay(140);
+  buzzOff();
   Serial.println(F("[BUZZER] self-test done"));
 }
 
@@ -464,24 +466,38 @@ void updateBuzzer(uint32_t nowMs) {
     buzzOff();
   }
 
-  // Ưu tiên: sạt lở > va đập > nghiêng > ẩm/nước cao
+  // Để yên: chỉ còi khi ẩm cao / sạt lở. Rung-nghiêng mặc định im (BUZZER_ON_MOTION=0).
+  static bool impactBuzzLatched = false;
+  static bool tiltBuzzLatched = false;
+
   if (landslideAlert) {
     if (nowMs - lastBuzzMs >= (BUZZER_LANDSLIDE_MS + BUZZER_LANDSLIDE_GAP_MS)) {
       buzzOn(BUZZER_LANDSLIDE_MS);
       lastBuzzMs = nowMs;
       Serial.println(F("[SAT_LO] BUZZER ALARM"));
     }
+#if BUZZER_ON_MOTION
   } else if (imu.impact) {
-    buzzOn(BUZZER_IMPACT_MS);
-    lastBuzzMs = nowMs;
-  } else if (imu.tiltAlert && (nowMs - lastBuzzMs > 700)) {
-    buzzOn(BUZZER_ALERT_MS);
-    lastBuzzMs = nowMs;
+    if (!impactBuzzLatched) {
+      impactBuzzLatched = true;
+      buzzOn(BUZZER_IMPACT_MS);
+      lastBuzzMs = nowMs;
+    }
+  } else if (imu.tiltAlert) {
+    if (!tiltBuzzLatched && (nowMs - lastBuzzMs > 1500)) {
+      tiltBuzzLatched = true;
+      buzzOn(BUZZER_ALERT_MS);
+      lastBuzzMs = nowMs;
+    }
+#endif
   } else if (wetRiskAlert && (nowMs - lastBuzzMs >= BUZZER_WET_GAP_MS)) {
     buzzOn(BUZZER_WET_MS);
     lastBuzzMs = nowMs;
     Serial.println(F("[WET_RISK] BUZZER"));
   }
+
+  if (!imu.impact) impactBuzzLatched = false;
+  if (!imu.tiltAlert) tiltBuzzLatched = false;
 }
 
 /**
@@ -615,6 +631,8 @@ void sendLoRaPacket(const char *reason) {
     Serial.printf("[LORA][TX] FAIL airtime~%lums totalFail=%lu\n",
                   (unsigned long)dt, (unsigned long)txFailCount);
   }
+  // LoRa TX 17dBm dễ “tích” còi thụ động gần anten — giữ pin LOW sau TX
+  if (buzzUntilMs == 0) buzzOff();
 }
 
 bool initLoRa() {

@@ -4,25 +4,23 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
-/// Thông báo heads-up kiểu Shopee: banner trên cùng, âm thanh, rung mạnh.
-/// Hoạt động cả khi app bị vuốt tắt nhờ Foreground Service + MQTT nền.
+import 'alert_store.dart';
+
+/// Heads-up kiểu Shopee — kênh MAX, hoạt động khi tắt app (qua FG service).
 class SatloNotifications {
   SatloNotifications._();
 
   static final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
   static bool _ready = false;
-  static int _id = 4000;
+  static int _id = 5000;
 
-  /// Channel mới (v3) — Android không đổi Importance của channel cũ.
-  static const _channelId = 'satlo_flood_v3';
+  /// Channel mới — Android không nâng Importance của channel cũ.
+  static const _channelId = 'satlo_flood_v4';
   static const _channelName = 'Cảnh báo lũ & sạt lở';
   static const _channelDesc =
-      'Thông báo khẩn khi lượng mưa/độ ẩm cao hoặc sạt lở — kể cả khi tắt app';
-
-  static const _repeatGuard = Duration(seconds: 15);
+      'Thông báo khẩn khi lũ/sạt lở — kể cả khi tắt app';
 
   static bool get _isMobile {
     if (kIsWeb) return false;
@@ -75,18 +73,7 @@ class SatloNotifications {
     _ready = true;
   }
 
-  /// Xóa chốt chống spam — gọi khi app vừa tắt để BG còn báo lại được.
-  static Future<void> clearAlertGuards() async {
-    if (!_isMobile) return;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.reload();
-    final keys = prefs.getKeys().where((k) => k.startsWith('satlo_alert_ms_'));
-    for (final k in keys) {
-      await prefs.remove(k);
-    }
-  }
-
-  /// Hiển thị cảnh báo lũ / sạt lở — heads-up + BigText + full-screen intent.
+  /// Hiển thị cảnh báo — [force] bỏ qua chốt chống spam ngắn.
   static Future<void> showFloodAlert({
     required String type,
     required String title,
@@ -96,15 +83,11 @@ class SatloNotifications {
     if (!_isMobile) return;
     await init();
 
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.reload();
-    final key = 'satlo_alert_ms_$type';
     final now = DateTime.now().millisecondsSinceEpoch;
-    final prev = prefs.getInt(key) ?? 0;
-    if (!force &&
-        now - prev >= 0 &&
-        now - prev < _repeatGuard.inMilliseconds) {
-      return;
+    if (!force) {
+      final last = await AlertStore.lastNotifyMs();
+      // Chống spam cùng phiên ~12s khi app đang mở
+      if (now - last >= 0 && now - last < 12000) return;
     }
 
     final copy = _copyFor(type, title, body);
@@ -160,10 +143,9 @@ class SatloNotifications {
       details,
       payload: type,
     );
-    await prefs.setInt(key, now);
+    await AlertStore.markNotified();
   }
 
-  /// Giữ API cũ.
   static Future<void> show({required String title, required String body}) {
     return showFloodAlert(type: 'ALERT', title: title, body: body);
   }

@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 
+import 'alert_store.dart';
 import 'config.dart';
 import 'notifications.dart';
 
@@ -235,6 +236,7 @@ class SatloProvider extends ChangeNotifier {
           lastAlarmKey = null;
           _tiltLatched = false;
           _wetLatched = false;
+          unawaited(AlertStore.clear());
         }
       } catch (_) {
         alarm = 'ON';
@@ -257,8 +259,15 @@ class SatloProvider extends ChangeNotifier {
     alarm = 'ON';
     alerts.insert(0, AlertItem(type, title, body, DateTime.now()));
     if (alerts.length > 40) alerts.removeLast();
+    // Lưu cho isolate nền — tắt app vẫn biết alarm đang ON để bắn lại
+    unawaited(AlertStore.setActive(type: type, title: title, body: body));
     unawaited(
-      SatloNotifications.showFloodAlert(type: type, title: title, body: body),
+      SatloNotifications.showFloodAlert(
+        type: type,
+        title: title,
+        body: body,
+        force: true,
+      ),
     );
   }
 
