@@ -208,10 +208,7 @@ class SatloBackgroundHandler extends TaskHandler {
       await _openMqtt(force: false);
       return;
     }
-    try {
-      // Giữ WebSocket sống
-      c.ping();
-    } catch (_) {}
+    // mqtt_client 10.x không còn ping() public — keepAlivePeriod tự gửi PINGREQ.
   }
 
   @override
