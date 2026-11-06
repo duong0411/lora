@@ -36,15 +36,50 @@ class LandslideApp extends StatefulWidget {
   State<LandslideApp> createState() => _LandslideAppState();
 }
 
-class _LandslideAppState extends State<LandslideApp> {
+class _LandslideAppState extends State<LandslideApp>
+    with WidgetsBindingObserver {
   late final AuthProvider _auth = AuthProvider()..bootstrap();
   late final SatloProvider _satlo = SatloProvider();
+  Timer? _fgHeartbeat;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    BackgroundMonitor.setAppForeground(true);
+    _fgHeartbeat = Timer.periodic(const Duration(seconds: 4), (_) {
+      BackgroundMonitor.setAppForeground(true);
+      try {
+        FlutterForegroundTask.sendDataToTask('APP_FG_HEARTBEAT');
+      } catch (_) {}
+    });
+  }
 
   @override
   void dispose() {
+    _fgHeartbeat?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    BackgroundMonitor.setAppForeground(false);
     _satlo.dispose();
     _auth.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final open = state == AppLifecycleState.resumed;
+    BackgroundMonitor.setAppForeground(open);
+    if (open) {
+      _fgHeartbeat?.cancel();
+      _fgHeartbeat = Timer.periodic(const Duration(seconds: 4), (_) {
+        try {
+          FlutterForegroundTask.sendDataToTask('APP_FG_HEARTBEAT');
+        } catch (_) {}
+      });
+    } else {
+      _fgHeartbeat?.cancel();
+      _fgHeartbeat = null;
+    }
   }
 
   @override

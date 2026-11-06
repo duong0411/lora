@@ -45,6 +45,16 @@
             android:foregroundServiceType="remoteMessaging"
             android:exported="false"
             android:stopWithTask="false" />
+        <receiver
+            android:name="com.pravera.flutter_foreground_task.service.RestartReceiver"
+            android:exported="false" />
+        <receiver
+            android:name="com.pravera.flutter_foreground_task.service.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
     <queries>
         <intent>

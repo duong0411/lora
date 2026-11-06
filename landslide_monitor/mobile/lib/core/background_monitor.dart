@@ -166,7 +166,9 @@ class SatloBackgroundHandler extends TaskHandler {
   MqttServerClient? _client;
   StreamSubscription<List<MqttReceivedMessage<MqttMessage>>>? _sub;
   bool _busy = false;
-  bool _appForeground = true; // lúc start service thường app đang mở
+  // false mặc định: vuốt/tắt app thường không kịp gửi APP_BG → vẫn phải bắn notify.
+  bool _appForeground = false;
+  int _lastFgHeartbeatMs = 0;
   String _chip = AppConfig.defaultChipId;
   String? _lastAlarmKey;
   int _lastAlarmMs = 0;
@@ -198,6 +200,13 @@ class SatloBackgroundHandler extends TaskHandler {
 
   @override
   void onRepeatEvent(DateTime timestamp) {
+    // Mất heartbeat từ UI > 12s → coi như app đã tắt/nền.
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (_appForeground &&
+        _lastFgHeartbeatMs > 0 &&
+        now - _lastFgHeartbeatMs > 12000) {
+      _appForeground = false;
+    }
     unawaited(_onTick());
   }
 
@@ -224,12 +233,14 @@ class SatloBackgroundHandler extends TaskHandler {
   @override
   void onReceiveData(Object data) {
     final msg = data.toString().trim();
-    if (msg == 'APP_FG') {
+    if (msg == 'APP_FG' || msg == 'APP_FG_HEARTBEAT') {
       _appForeground = true;
+      _lastFgHeartbeatMs = DateTime.now().millisecondsSinceEpoch;
       return;
     }
     if (msg == 'APP_BG') {
       _appForeground = false;
+      _lastFgHeartbeatMs = 0;
       // Xóa chốt cũ — nếu alarm vẫn ON, báo lại ngay khi app vừa tắt
       _lastAlarmKey = null;
       _lastAlarmMs = 0;
@@ -472,24 +483,19 @@ class SatloBackgroundHandler extends TaskHandler {
     _lastAlarmKey = key;
     _lastAlarmMs = now;
 
-    // App đang mở: UI (SatloProvider) đã hiện cảnh báo — BG chỉ cập nhật thanh FG.
-    if (_appForeground && !forceNotify) {
-      await FlutterForegroundTask.updateService(
-        notificationTitle: title,
-        notificationText: body,
-      );
-      return;
-    }
-
+    // Luôn bắn heads-up từ service nền — đây là đường chính khi tắt/vuốt app.
+    // (UI mở vẫn có SatloProvider; channel dedupe 15s tránh spam trùng type.)
     await SatloNotifications.showFloodAlert(
       type: type,
       title: title,
       body: body,
-      force: forceNotify,
+      force: forceNotify || !_appForeground,
     );
     await FlutterForegroundTask.updateService(
       notificationTitle: title,
-      notificationText: body,
+      notificationText: _appForeground
+          ? body
+          : '🚨 $title — tắt app vẫn báo',
     );
   }
 
