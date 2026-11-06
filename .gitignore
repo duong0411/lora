@@ -36,6 +36,8 @@
 **/GoogleService-Info.plist
 **/serviceAccount.json
 **/firebase_options.dart
+**/.gs_b64.txt
+**/fcm_bridge/node_modules/
 
 # Misc
 .DS_Store

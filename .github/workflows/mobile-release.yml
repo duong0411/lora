@@ -30,6 +30,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Inject google-services.json (FCM)
+        env:
+          GS_B64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+          GS_RAW: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          set -euo pipefail
+          DEST="android/app/google-services.json"
+          if [ -n "${GS_B64:-}" ]; then
+            echo "$GS_B64" | base64 -d > "$DEST"
+            echo "Wrote $DEST from GOOGLE_SERVICES_JSON_BASE64"
+          elif [ -n "${GS_RAW:-}" ]; then
+            printf '%s\n' "$GS_RAW" > "$DEST"
+            echo "Wrote $DEST from GOOGLE_SERVICES_JSON"
+          else
+            echo "::warning::No GOOGLE_SERVICES_JSON(_BASE64) secret — APK build without FCM"
+          fi
+          if [ -f "$DEST" ]; then
+            python3 -c "import json; json.load(open('$DEST')); print('google-services.json OK')"
+          fi
+
       - name: Setup Java
         uses: actions/setup-java@v5
         with:
